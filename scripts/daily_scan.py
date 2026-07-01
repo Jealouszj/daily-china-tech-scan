@@ -1,0 +1,343 @@
+#!/usr/bin/env python3
+"""
+Daily China Tech Overseas News Scanner
+=======================================
+复现 agent-reach 多平台搜索流程：
+WebSearch(英文源) → 关键文章抓取 → Anthropic API 合成 → GitHub Issue 发布
+
+兼容两种模式：
+- 深度模式 (DEEP_MODE=true): 使用 Anthropic API 做多轮智能合成
+- 轻量模式 (DEEP_MODE=false): 纯搜索聚合，不消耗 API token
+"""
+
+import os
+import sys
+import json
+import hashlib
+from datetime import datetime, timezone, timedelta
+from pathlib import Path
+
+# --- 搜索轮次定义（复现 agent-reach 的多平台搜索策略）---
+SEARCH_ROUNDS = [
+    {
+        "label": "Round 1: Broad English financial media",
+        "queries": [
+            "China tech stocks news today Bloomberg Reuters exclusive underreported",
+            "Chinese semiconductor AI chip export controls US sanctions latest 2026",
+            "China technology development foreign media exclusive coverage 2026",
+        ],
+    },
+    {
+        "label": "Round 2: Deep-dive specific angles",
+        "queries": [
+            "China data centers remove Nvidia chips mandate domestic AI processors 2026",
+            "Chinese AI companies actual capability vs claims western analyst report short seller 2026",
+            "China EV battery overseas factory pushback Europe US BYD CATL 2026",
+            "Huawei SMIC advanced chip yield problems 5nm process foreign media report 2026",
+        ],
+    },
+    {
+        "label": "Round 3: Gap-fill & breaking news",
+        "queries": [
+            "China tech overseas expansion backlash Southeast Asia Latin America 2026",
+            "TikTok ByteDance US ban latest development June July 2026",
+            "China AI regulation policy change data security law 2026",
+        ],
+    },
+]
+
+SYNTHESIS_SYSTEM_PROMPT = """You are a senior financial and technology research analyst specializing in
+cross-referencing Chinese and Western media coverage.
+
+## Your Task
+Given raw search results from multiple rounds of English-language web searches about Chinese
+technology and financial news, produce a comprehensive markdown report.
+
+## Report Structure (follow exactly):
+
+### Section 1: Explosive / Underreported Stories
+Ranked by significance. For each story include:
+- **Source**: Which foreign media outlet (Bloomberg, Reuters, SCMP, etc.)
+- **Domestic Coverage Level**: one of: 几乎不报 / 极低 / 有些但轻描淡写
+- **Key Facts**: 3-5 bullet points with specific data and numbers
+- **Why Underreported**: 1-2 sentences analyzing the reason
+
+### Section 2: Notable But Less Explosive
+Same format, shorter entries.
+
+### Section 3: Summary Table
+| Topic | Domestic Coverage | Significance | Source |
+
+### Section 4: Analyst Commentary
+2-3 paragraphs on cross-cutting themes and what to watch next.
+
+## Critical Rules
+1. Prioritize stories with specific numbers, dates, and named sources
+2. Cross-reference: if multiple foreign outlets report the same thing, flag it as more credible
+3. Clearly separate confirmed facts from analyst opinions
+4. Filter out Chinese state media (Xinhua, CGTN, China Daily, Global Times, ECNS, People's Daily, CRI) — these are domestic sources, not foreign
+5. Include URLs for key articles
+6. Date the report with today's date
+7. Write in Chinese (the user is Chinese-speaking) but preserve key English terms and company names
+8. Add a disclaimer: "以上信息整理自公开外媒报道，不代表本人观点，仅供参考。"
+"""
+
+
+def search_duckduckgo(query: str, max_results: int = 8) -> list[dict]:
+    """Use DuckDuckGo free search (no API key needed)."""
+    try:
+        from duckduckgo_search import DDGS
+        results = []
+        with DDGS() as ddgs:
+            for r in ddgs.text(query, max_results=max_results):
+                results.append({
+                    "title": r.get("title", ""),
+                    "url": r.get("href", ""),
+                    "snippet": r.get("body", ""),
+                })
+        return results
+    except ImportError:
+        print("[WARN] duckduckgo-search not installed, skipping DDG")
+        return []
+
+
+def search_newsapi(query: str, api_key: str | None) -> list[dict]:
+    """Use NewsAPI for structured news (free tier: 100 req/day)."""
+    if not api_key:
+        return []
+    try:
+        import requests
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        url = "https://newsapi.org/v2/everything"
+        resp = requests.get(url, params={
+            "q": query,
+            "from": today,
+            "language": "en",
+            "sortBy": "relevancy",
+            "pageSize": 5,
+            "apiKey": api_key,
+        }, timeout=10)
+        if resp.status_code != 200:
+            print(f"[WARN] NewsAPI error: {resp.status_code} {resp.text[:200]}")
+            return []
+        data = resp.json()
+        return [
+            {
+                "title": a.get("title", ""),
+                "url": a.get("url", ""),
+                "snippet": a.get("description", ""),
+                "source": a.get("source", {}).get("name", ""),
+            }
+            for a in data.get("articles", [])
+        ]
+    except Exception as e:
+        print(f"[WARN] NewsAPI failed: {e}")
+        return []
+
+
+def deduplicate_results(all_results: list[dict]) -> list[dict]:
+    """Deduplicate by URL hash."""
+    seen = set()
+    unique = []
+    for r in all_results:
+        key = hashlib.md5(r["url"].encode()).hexdigest()
+        if key not in seen:
+            seen.add(key)
+            unique.append(r)
+    return unique
+
+
+def format_search_results(results: list[dict], max_items: int = 50) -> str:
+    """Format search results as text for Anthropic API synthesis."""
+    lines = []
+    for i, r in enumerate(results[:max_items], 1):
+        lines.append(f"{i}. **{r['title']}**")
+        lines.append(f"   URL: {r['url']}")
+        lines.append(f"   Snippet: {r['snippet'][:300]}")
+        source = r.get("source", "")
+        if source:
+            lines.append(f"   Source: {source}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def synthesize_with_claude(search_text: str, api_key: str) -> str:
+    """Use Anthropic API to synthesize final report."""
+    import anthropic
+
+    client = anthropic.Anthropic(api_key=api_key)
+    today_str = datetime.now(timezone.utc).strftime("%Y年%m月%d日")
+
+    prompt = f"""Today is {today_str}.
+
+Below are raw search results from multiple rounds of English-language web searches
+about Chinese technology and financial news. Synthesize them into a comprehensive
+report following the structure and rules in your system prompt.
+
+=== RAW SEARCH RESULTS ===
+{search_text}
+=== END RAW RESULTS ===
+
+Produce the full report now. Focus on stories that Chinese domestic media
+would NOT cover, or cover very differently. Be specific with numbers and sources."""
+
+    try:
+        response = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=8000,
+            system=SYNTHESIS_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return response.content[0].text
+    except Exception as e:
+        print(f"[ERROR] Anthropic API failed: {e}")
+        return f"API 合成失败: {e}\n\n以下为原始搜索结果：\n\n{search_text}"
+
+
+def lightweight_synthesis(search_text: str, all_results: list[dict]) -> str:
+    """Lightweight mode: template-based aggregation without AI."""
+    today_str = datetime.now(timezone.utc).strftime("%Y年%m月%d日")
+
+    report = f"""# 🌍 中国科技财经海外资讯扫描
+
+> 生成时间：{today_str}（北京时间）
+> 模式：轻量聚合（未使用 AI 合成）
+
+---
+
+## ⚠️ 轻量模式
+
+本报告为多源搜索的自动聚合，未经 AI 深度分析和去重。
+**开启深度模式**：在仓库 Settings → Secrets → 添加 `ANTHROPIC_API_KEY`。
+
+---
+
+## 📰 搜索结果（按来源分组）
+
+"""
+    by_source: dict[str, list] = {}
+    for r in all_results:
+        src = r.get("source", "未标注来源")
+        by_source.setdefault(src, []).append(r)
+
+    for src, items in sorted(by_source.items(), key=lambda x: -len(x[1])):
+        report += f"### {src} ({len(items)} 条)\n\n"
+        for item in items[:5]:
+            report += f"- **{item['title']}**\n"
+            report += f"  {item['snippet'][:200]}\n"
+            report += f"  {item['url']}\n\n"
+
+    report += """
+---
+
+> ⚠️ 以上为自动搜索聚合，未经人工核实。在 Settings → Secrets → 添加 `ANTHROPIC_API_KEY` 即可开启 AI 深度分析。
+"""
+    return report
+
+
+def create_github_issue(repo: str, title: str, body: str, token: str) -> str | None:
+    """Create a GitHub issue with the report."""
+    try:
+        from github import Github
+        g = Github(token)
+        repo_obj = g.get_repo(repo)
+        issue = repo_obj.create_issue(
+            title=title,
+            body=body,
+            labels=["daily-scan", "china-tech"],
+        )
+        return issue.html_url
+    except Exception as e:
+        print(f"[ERROR] Failed to create GitHub issue: {e}")
+        return None
+
+
+def save_report(report: str, output_dir: Path) -> Path:
+    """Save report to output directory."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    filepath = output_dir / f"report-{today}.md"
+    filepath.write_text(report, encoding="utf-8")
+    latest = output_dir / "report.md"
+    latest.write_text(report, encoding="utf-8")
+    print(f"[OK] Report saved to {filepath}")
+    return filepath
+
+
+def main():
+    print("=" * 60)
+    print("Daily China Tech Overseas News Scanner")
+    print(f"Started: {datetime.now(timezone.utc).isoformat()}")
+    print("=" * 60)
+
+    anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    github_token = os.environ.get("GITHUB_TOKEN", "")
+    newsapi_key = os.environ.get("NEWSAPI_KEY", "")
+    deep_mode = os.environ.get("DEEP_MODE", "true").lower() == "true"
+    repo = os.environ.get("GITHUB_REPOSITORY", "")
+
+    use_ai = deep_mode and bool(anthropic_key)
+    print(f"Mode: {'AI Deep' if use_ai else 'Lightweight (no AI)'}")
+
+    # --- Multi-round search ---
+    all_results: list[dict] = []
+    for round_def in SEARCH_ROUNDS:
+        print(f"\n--- {round_def['label']} ---")
+        for query in round_def["queries"]:
+            print(f"  Searching: {query[:80]}...")
+            ddg_results = search_duckduckgo(query)
+            all_results.extend(ddg_results)
+            print(f"    DuckDuckGo: {len(ddg_results)} results")
+            news_results = search_newsapi(query, newsapi_key)
+            all_results.extend(news_results)
+            if news_results:
+                print(f"    NewsAPI: {len(news_results)} results")
+
+    unique_results = deduplicate_results(all_results)
+    print(f"\n[INFO] Total raw: {len(all_results)}, unique: {len(unique_results)}")
+
+    search_text = format_search_results(unique_results)
+
+    # --- Synthesize ---
+    today_cn = datetime.now(timezone.utc).strftime("%Y年%m月%d日")
+    title = f"每日中国科技海外资讯扫描 — {today_cn}"
+
+    if use_ai:
+        print("\n[INFO] Synthesizing with Anthropic API...")
+        synthesis = synthesize_with_claude(search_text, anthropic_key)
+        report = f"""# 🌍 {title}
+
+> 🤖 由 GitHub Actions + Anthropic API 自动生成 | {today_cn} 21:03 北京时间
+> 搜索策略：3 轮 10 个英文查询 → 去重 → Claude Sonnet 合成
+
+{synthesis}
+"""
+    else:
+        print("\n[INFO] Using lightweight aggregation...")
+        inner = lightweight_synthesis(search_text, unique_results)
+        report = f"# 🌍 {title}\n\n{inner}"
+
+    # --- Output ---
+    output_dir = Path("output")
+    report_path = save_report(report, output_dir)
+
+    # --- GitHub Issue ---
+    issue_url = None
+    if github_token and repo:
+        print(f"\n[INFO] Creating GitHub issue in {repo}...")
+        issue_url = create_github_issue(repo, title, report, github_token)
+        if issue_url:
+            print(f"[OK] Issue: {issue_url}")
+
+    print("\n" + "=" * 60)
+    print("SCAN COMPLETE")
+    print(f"Unique results: {len(unique_results)}")
+    print(f"Report: {report_path}")
+    if issue_url:
+        print(f"Issue: {issue_url}")
+    print(f"Mode: {'AI' if use_ai else 'Lightweight'}")
+    print("=" * 60)
+
+
+if __name__ == "__main__":
+    main()

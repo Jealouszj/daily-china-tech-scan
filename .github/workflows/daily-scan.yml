@@ -1,0 +1,57 @@
+name: Daily China Tech Overseas News Scan
+
+on:
+  schedule:
+    # 北京时间 21:07 (UTC 13:07) 每天执行
+    - cron: "7 13 * * *"
+  # 允许手动触发测试
+  workflow_dispatch:
+    inputs:
+      deep_mode:
+        description: "深度模式（使用 Anthropic API 合成，需消耗 token）"
+        type: boolean
+        default: true
+
+env:
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-${{ hashFiles('scripts/requirements.txt') }}
+          restore-keys: |
+            pip-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: pip install -r scripts/requirements.txt
+
+      - name: Run daily scan
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEEP_MODE: ${{ github.event.inputs.deep_mode || 'true' }}
+          NEWSAPI_KEY: ${{ secrets.NEWSAPI_KEY }}
+        run: python scripts/daily_scan.py
+
+      - name: Upload report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-china-tech-report
+          path: output/report.md
+          retention-days: 30
