@@ -13,6 +13,7 @@ WebSearch(英文源) → 关键文章抓取 → Anthropic API 合成 → GitHub 
 import os
 import sys
 import json
+import time
 import hashlib
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -87,41 +88,58 @@ Same format, shorter entries.
 
 
 def search_duckduckgo(query: str, site_filter: str = "",
-                     max_results: int = 8, time_limit: str = "w") -> list[dict]:
+                     max_results: int = 8, time_limit: str = "w",
+                     max_retries: int = 3) -> list[dict]:
     """Use DuckDuckGo news search (free, no API key).
-    Falls back to text search if news returns nothing.
+    Includes rate-limit retry with exponential backoff.
     time_limit: 'd' (day), 'w' (week), 'm' (month)."""
     try:
         from duckduckgo_search import DDGS
-        results = []
+    except ImportError:
+        print("[WARN] duckduckgo-search not installed, skipping DDG")
+        return []
 
-        # Build query with optional site filter
-        full_query = f"{query} {site_filter}".strip()
+    full_query = f"{query} {site_filter}".strip()
+    results = []
 
-        with DDGS() as ddgs:
-            # Primary: news search with time filter
-            for r in ddgs.news(full_query, max_results=max_results, timelimit=time_limit):
-                results.append({
-                    "title": r.get("title", ""),
-                    "url": r.get("url", ""),
-                    "snippet": r.get("body", ""),
-                    "source": r.get("source", ""),
-                })
+    for attempt in range(max_retries):
+        try:
+            with DDGS() as ddgs:
+                for r in ddgs.news(full_query, max_results=max_results, timelimit=time_limit):
+                    results.append({
+                        "title": r.get("title", ""),
+                        "url": r.get("url", ""),
+                        "snippet": r.get("body", ""),
+                        "source": r.get("source", ""),
+                    })
 
-            # Fallback: text search if news returned nothing
-            if not results:
-                print(f"    News search empty, falling back to text search...")
+            if results:
+                return results
+
+            # News empty, fall back to text search
+            print(f"    News empty, trying text search...")
+            time.sleep(1.5)
+            with DDGS() as ddgs:
                 for r in ddgs.text(full_query, max_results=max_results):
                     results.append({
                         "title": r.get("title", ""),
                         "url": r.get("href", ""),
                         "snippet": r.get("body", ""),
                     })
+            return results
 
-        return results
-    except ImportError:
-        print("[WARN] duckduckgo-search not installed, skipping DDG")
-        return []
+        except Exception as e:
+            msg = str(e)
+            if "403" in msg or "Ratelimit" in msg or "rate" in msg.lower():
+                wait = (attempt + 1) * 3  # 3s, 6s, 9s
+                print(f"    Rate limited, retrying in {wait}s (attempt {attempt+1}/{max_retries})...")
+                time.sleep(wait)
+            else:
+                print(f"    DDG error: {e}")
+                break
+
+    print(f"    DDG failed after {max_retries} retries, skipping query")
+    return []
 
 
 def search_newsapi(query: str, api_key: str | None) -> list[dict]:
@@ -324,6 +342,8 @@ def main():
             all_results.extend(news_results)
             if news_results:
                 print(f"    NewsAPI: {len(news_results)} results")
+            # Avoid DDG rate limiting: 2s pause between queries
+            time.sleep(2)
 
     unique_results = deduplicate_results(all_results)
     print(f"\n[INFO] Total raw: {len(all_results)}, unique: {len(unique_results)}")
