@@ -15,6 +15,9 @@ import sys
 import json
 import time
 import hashlib
+import urllib.parse
+import urllib.request
+import xml.etree.ElementTree as ET
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -87,59 +90,68 @@ Same format, shorter entries.
 """
 
 
-def search_duckduckgo(query: str, site_filter: str = "",
-                     max_results: int = 8, time_limit: str = "w",
-                     max_retries: int = 3) -> list[dict]:
-    """Use DuckDuckGo news search (free, no API key).
-    Includes rate-limit retry with exponential backoff.
-    time_limit: 'd' (day), 'w' (week), 'm' (month)."""
-    try:
-        from duckduckgo_search import DDGS
-    except ImportError:
-        print("[WARN] duckduckgo-search not installed, skipping DDG")
-        return []
-
-    full_query = f"{query} {site_filter}".strip()
+def search_google_news(query: str, site_filter: str = "",
+                     max_results: int = 10) -> list[dict]:
+    """Use Google News RSS feed — free, no API key, no rate limits.
+    Reliable in GitHub Actions unlike DDG which rate-limits shared IPs."""
     results = []
 
-    for attempt in range(max_retries):
-        try:
-            with DDGS() as ddgs:
-                for r in ddgs.news(full_query, max_results=max_results, timelimit=time_limit):
-                    results.append({
-                        "title": r.get("title", ""),
-                        "url": r.get("url", ""),
-                        "snippet": r.get("body", ""),
-                        "source": r.get("source", ""),
-                    })
+    # If site_filter provided, append as search terms (RSS doesn't support site: syntax)
+    full_query = f"{query} {site_filter}".strip()
 
-            if results:
-                return results
+    url = ("https://news.google.com/rss/search?"
+           f"q={urllib.parse.quote(full_query)}"
+           "&hl=en-US&gl=US&ceid=US:en")
 
-            # News empty, fall back to text search
-            print(f"    News empty, trying text search...")
-            time.sleep(1.5)
-            with DDGS() as ddgs:
-                for r in ddgs.text(full_query, max_results=max_results):
-                    results.append({
-                        "title": r.get("title", ""),
-                        "url": r.get("href", ""),
-                        "snippet": r.get("body", ""),
-                    })
-            return results
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "daily-china-scan/1.0"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            tree = ET.parse(resp)
+            root = tree.getroot()
 
-        except Exception as e:
-            msg = str(e)
-            if "403" in msg or "Ratelimit" in msg or "rate" in msg.lower():
-                wait = (attempt + 1) * 3  # 3s, 6s, 9s
-                print(f"    Rate limited, retrying in {wait}s (attempt {attempt+1}/{max_retries})...")
-                time.sleep(wait)
-            else:
-                print(f"    DDG error: {e}")
-                break
+        for item in root.findall('.//item')[:max_results]:
+            title = item.findtext('title', '')
+            link = item.findtext('link', '')
+            desc = item.findtext('description', '')
+            source_elem = item.find('source')
+            source = source_elem.text if source_elem is not None else ''
+            # Clean description (remove HTML)
+            if desc:
+                desc = desc.replace('<p>', '').replace('</p>', '')
+                desc = ' '.join(desc.split())[:300]
+            results.append({
+                "title": title,
+                "url": link,
+                "snippet": desc,
+                "source": source,
+            })
+        return results
+    except Exception as e:
+        print(f"    Google News error: {type(e).__name__}: {e}")
+        return []
 
-    print(f"    DDG failed after {max_retries} retries, skipping query")
-    return []
+
+def search_duckduckgo(query: str, site_filter: str = "",
+                     max_results: int = 5, **kwargs) -> list[dict]:
+    """DDG fallback — kept for local testing, not used in CI by default."""
+    # Skip DDG entirely in CI (GitHub Actions) to avoid rate limits
+    if os.environ.get("CI") or os.environ.get("GITHUB_ACTIONS"):
+        return []
+    try:
+        from duckduckgo_search import DDGS
+        full_query = f"{query} {site_filter}".strip()
+        results = []
+        with DDGS() as ddgs:
+            for r in ddgs.news(full_query, max_results=max_results, timelimit="w"):
+                results.append({
+                    "title": r.get("title", ""),
+                    "url": r.get("url", ""),
+                    "snippet": r.get("body", ""),
+                    "source": r.get("source", ""),
+                })
+        return results
+    except Exception:
+        return []
 
 
 def search_newsapi(query: str, api_key: str | None) -> list[dict]:
@@ -234,9 +246,14 @@ would NOT cover, or cover very differently. Be specific with numbers and sources
             system=SYNTHESIS_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": prompt}],
         )
-        return response.content[0].text
+        # Extract text from all content blocks (skip ThinkingBlock from DeepSeek)
+        text_parts = []
+        for block in response.content:
+            if hasattr(block, 'text'):
+                text_parts.append(block.text)
+        return "\n".join(text_parts) if text_parts else "(empty response)"
     except Exception as e:
-        print(f"[ERROR] Anthropic API failed: {e}")
+        print(f"[ERROR] API call failed: {e}")
         return f"API 合成失败: {e}\n\n以下为原始搜索结果：\n\n{search_text}"
 
 
@@ -284,8 +301,8 @@ def lightweight_synthesis(search_text: str, all_results: list[dict]) -> str:
 def create_github_issue(repo: str, title: str, body: str, token: str) -> str | None:
     """Create a GitHub issue with the report."""
     try:
-        from github import Github
-        g = Github(token)
+        from github import Auth, Github
+        g = Github(auth=Auth.Token(token))
         repo_obj = g.get_repo(repo)
         issue = repo_obj.create_issue(
             title=title,
@@ -335,15 +352,20 @@ def main():
         for query in round_def["queries"]:
             filter_info = f" [site: {site_filter[:50]}...]" if site_filter else ""
             print(f"  Searching: {query}{filter_info}")
+            # Primary: Google News RSS (free, reliable in CI)
+            gn_results = search_google_news(query, site_filter=site_filter)
+            all_results.extend(gn_results)
+            print(f"    Google News: {len(gn_results)} results")
+            # Secondary: DDG (local only, skipped in CI)
             ddg_results = search_duckduckgo(query, site_filter=site_filter)
             all_results.extend(ddg_results)
-            print(f"    DDG news: {len(ddg_results)} results")
+            if ddg_results:
+                print(f"    DDG: {len(ddg_results)} results")
+            # Tertiary: NewsAPI (if key configured)
             news_results = search_newsapi(query, newsapi_key)
             all_results.extend(news_results)
             if news_results:
                 print(f"    NewsAPI: {len(news_results)} results")
-            # Avoid DDG rate limiting: 2s pause between queries
-            time.sleep(2)
 
     unique_results = deduplicate_results(all_results)
     print(f"\n[INFO] Total raw: {len(all_results)}, unique: {len(unique_results)}")
