@@ -17,32 +17,35 @@ import hashlib
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
-# --- 搜索轮次定义（复现 agent-reach 的多平台搜索策略）---
+# --- 搜索轮次定义（短关键词 + 英文源限制，适合 DDG news 搜索）---
 SEARCH_ROUNDS = [
     {
-        "label": "Round 1: Broad English financial media",
+        "label": "Round 1: Broad financial news",
         "queries": [
-            "China tech stocks news today Bloomberg Reuters exclusive underreported",
-            "Chinese semiconductor AI chip export controls US sanctions latest 2026",
-            "China technology development foreign media exclusive coverage 2026",
+            "China technology stocks",
+            "China semiconductor chip export",
+            "China AI artificial intelligence",
         ],
+        "site_filter": "",  # 不做站点限制，广撒网
     },
     {
-        "label": "Round 2: Deep-dive specific angles",
+        "label": "Round 2: Specific angles",
         "queries": [
-            "China data centers remove Nvidia chips mandate domestic AI processors 2026",
-            "Chinese AI companies actual capability vs claims western analyst report short seller 2026",
-            "China EV battery overseas factory pushback Europe US BYD CATL 2026",
-            "Huawei SMIC advanced chip yield problems 5nm process foreign media report 2026",
+            "China EV battery electric vehicle",
+            "Huawei SMIC chip manufacturing",
+            "China data center Nvidia ban",
+            "ByteDance TikTok US ban",
         ],
+        "site_filter": "",
     },
     {
-        "label": "Round 3: Gap-fill & breaking news",
+        "label": "Round 3: Premium sources (Bloomberg Reuters SCMP)",
         "queries": [
-            "China tech overseas expansion backlash Southeast Asia Latin America 2026",
-            "TikTok ByteDance US ban latest development June July 2026",
-            "China AI regulation policy change data security law 2026",
+            "China tech",
+            "China stock market",
+            "China AI chip",
         ],
+        "site_filter": "bloomberg.com OR reuters.com OR scmp.com OR ft.com OR wsj.com",
     },
 ]
 
@@ -83,18 +86,38 @@ Same format, shorter entries.
 """
 
 
-def search_duckduckgo(query: str, max_results: int = 8) -> list[dict]:
-    """Use DuckDuckGo free search (no API key needed)."""
+def search_duckduckgo(query: str, site_filter: str = "",
+                     max_results: int = 8, time_limit: str = "w") -> list[dict]:
+    """Use DuckDuckGo news search (free, no API key).
+    Falls back to text search if news returns nothing.
+    time_limit: 'd' (day), 'w' (week), 'm' (month)."""
     try:
         from duckduckgo_search import DDGS
         results = []
+
+        # Build query with optional site filter
+        full_query = f"{query} {site_filter}".strip()
+
         with DDGS() as ddgs:
-            for r in ddgs.text(query, max_results=max_results):
+            # Primary: news search with time filter
+            for r in ddgs.news(full_query, max_results=max_results, timelimit=time_limit):
                 results.append({
                     "title": r.get("title", ""),
-                    "url": r.get("href", ""),
+                    "url": r.get("url", ""),
                     "snippet": r.get("body", ""),
+                    "source": r.get("source", ""),
                 })
+
+            # Fallback: text search if news returned nothing
+            if not results:
+                print(f"    News search empty, falling back to text search...")
+                for r in ddgs.text(full_query, max_results=max_results):
+                    results.append({
+                        "title": r.get("title", ""),
+                        "url": r.get("href", ""),
+                        "snippet": r.get("body", ""),
+                    })
+
         return results
     except ImportError:
         print("[WARN] duckduckgo-search not installed, skipping DDG")
@@ -161,11 +184,16 @@ def format_search_results(results: list[dict], max_items: int = 50) -> str:
     return "\n".join(lines)
 
 
-def synthesize_with_claude(search_text: str, api_key: str) -> str:
-    """Use Anthropic API to synthesize final report."""
+def synthesize_with_claude(search_text: str, api_key: str,
+                          base_url: str = "https://api.anthropic.com",
+                          model: str = "claude-sonnet-4-6") -> str:
+    """Use Anthropic-compatible API (Anthropic / DeepSeek / OpenRouter)."""
     import anthropic
 
-    client = anthropic.Anthropic(api_key=api_key)
+    client = anthropic.Anthropic(
+        api_key=api_key,
+        base_url=base_url,
+    )
     today_str = datetime.now(timezone.utc).strftime("%Y年%m月%d日")
 
     prompt = f"""Today is {today_str}.
@@ -183,7 +211,7 @@ would NOT cover, or cover very differently. Be specific with numbers and sources
 
     try:
         response = client.messages.create(
-            model="claude-sonnet-4-6",
+            model=model,
             max_tokens=8000,
             system=SYNTHESIS_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": prompt}],
@@ -271,6 +299,8 @@ def main():
     print("=" * 60)
 
     anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    anthropic_base_url = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
+    anthropic_model = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6")
     github_token = os.environ.get("GITHUB_TOKEN", "")
     newsapi_key = os.environ.get("NEWSAPI_KEY", "")
     deep_mode = os.environ.get("DEEP_MODE", "true").lower() == "true"
@@ -283,11 +313,13 @@ def main():
     all_results: list[dict] = []
     for round_def in SEARCH_ROUNDS:
         print(f"\n--- {round_def['label']} ---")
+        site_filter = round_def.get("site_filter", "")
         for query in round_def["queries"]:
-            print(f"  Searching: {query[:80]}...")
-            ddg_results = search_duckduckgo(query)
+            filter_info = f" [site: {site_filter[:50]}...]" if site_filter else ""
+            print(f"  Searching: {query}{filter_info}")
+            ddg_results = search_duckduckgo(query, site_filter=site_filter)
             all_results.extend(ddg_results)
-            print(f"    DuckDuckGo: {len(ddg_results)} results")
+            print(f"    DDG news: {len(ddg_results)} results")
             news_results = search_newsapi(query, newsapi_key)
             all_results.extend(news_results)
             if news_results:
@@ -304,7 +336,9 @@ def main():
 
     if use_ai:
         print("\n[INFO] Synthesizing with Anthropic API...")
-        synthesis = synthesize_with_claude(search_text, anthropic_key)
+        synthesis = synthesize_with_claude(search_text, anthropic_key,
+                                            base_url=anthropic_base_url,
+                                            model=anthropic_model)
         report = f"""# 🌍 {title}
 
 > 🤖 由 GitHub Actions + Anthropic API 自动生成 | {today_cn} 21:03 北京时间

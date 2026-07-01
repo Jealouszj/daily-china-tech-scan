@@ -43,6 +43,8 @@ jobs:
       - name: Run daily scan
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
+          ANTHROPIC_MODEL: ${{ secrets.ANTHROPIC_MODEL }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DEEP_MODE: ${{ github.event.inputs.deep_mode || 'true' }}
           NEWSAPI_KEY: ${{ secrets.NEWSAPI_KEY }}
