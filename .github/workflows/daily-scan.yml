@@ -2,8 +2,8 @@ name: Daily China Tech Overseas News Scan
 
 on:
   schedule:
-    # 北京时间 21:45 (UTC 13:45) 每天执行
-    - cron: "45 13 * * *"
+    # 北京时间 22:05 (UTC 14:05) 每天执行
+    - cron: "5 14 * * *"
   # 允许手动触发测试
   workflow_dispatch:
 
@@ -47,6 +47,12 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DEEP_MODE: ${{ github.event.inputs.deep_mode || 'true' }}
           NEWSAPI_KEY: ${{ secrets.NEWSAPI_KEY }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
         run: python scripts/daily_scan.py
 
       - name: Upload report artifact

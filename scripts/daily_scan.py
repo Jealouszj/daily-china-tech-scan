@@ -18,6 +18,9 @@ import hashlib
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -327,6 +330,48 @@ def save_report(report: str, output_dir: Path) -> Path:
     return filepath
 
 
+def send_email(report: str, title: str) -> bool:
+    """Send report via SMTP email."""
+    smtp_host = os.environ.get("SMTP_HOST", "")
+    smtp_port = os.environ.get("SMTP_PORT", "587")
+    smtp_username = os.environ.get("SMTP_USERNAME", "")
+    smtp_password = os.environ.get("SMTP_PASSWORD", "")
+    email_from = os.environ.get("EMAIL_FROM", "")
+    email_to = os.environ.get("EMAIL_TO", "")
+
+    if not all([smtp_host, smtp_username, smtp_password, email_from, email_to]):
+        print("[INFO] Email skipped: SMTP config not complete")
+        return False
+
+    try:
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = title
+        msg["From"] = email_from
+        msg["To"] = email_to
+
+        # Plain text fallback (strip markdown for readability)
+        plain = report.replace("#", "").replace("*", "").replace("`", "")[:5000]
+        msg.attach(MIMEText(plain, "plain", "utf-8"))
+        msg.attach(MIMEText(report, "html", "utf-8"))
+
+        port = int(smtp_port)
+        if port == 465:
+            with smtplib.SMTP_SSL(smtp_host, port, timeout=30) as server:
+                server.login(smtp_username, smtp_password)
+                server.send_message(msg)
+        else:
+            with smtplib.SMTP(smtp_host, port, timeout=30) as server:
+                server.starttls()
+                server.login(smtp_username, smtp_password)
+                server.send_message(msg)
+
+        print(f"[OK] Email sent to {email_to}")
+        return True
+    except Exception as e:
+        print(f"[ERROR] Email failed: {e}")
+        return False
+
+
 def main():
     print("=" * 60)
     print("Daily China Tech Overseas News Scanner")
@@ -396,6 +441,9 @@ def main():
     # --- Output ---
     output_dir = Path("output")
     report_path = save_report(report, output_dir)
+
+    # --- Email ---
+    send_email(report, title)
 
     # --- GitHub Issue ---
     issue_url = None
