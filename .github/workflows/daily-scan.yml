@@ -6,11 +6,10 @@ on:
     - cron: "7 13 * * *"
   # 允许手动触发测试
   workflow_dispatch:
-    inputs:
-      deep_mode:
-        description: "深度模式（使用 Anthropic API 合成，需消耗 token）"
-        type: boolean
-        default: true
+
+permissions:
+  contents: read
+  actions: write
 
 env:
   PYTHONUNBUFFERED: "1"
