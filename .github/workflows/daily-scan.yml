@@ -2,8 +2,8 @@ name: Daily China Tech Overseas News Scan
 
 on:
   schedule:
-    # 北京时间 21:07 (UTC 13:07) 每天执行
-    - cron: "7 13 * * *"
+    # 北京时间 21:45 (UTC 13:45) 每天执行
+    - cron: "45 13 * * *"
   # 允许手动触发测试
   workflow_dispatch:
 
