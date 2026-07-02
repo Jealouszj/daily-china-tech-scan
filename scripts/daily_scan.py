@@ -145,7 +145,7 @@ def search_duckduckgo(query: str, site_filter: str = "",
         full_query = f"{query} {site_filter}".strip()
         results = []
         with DDGS() as ddgs:
-            for r in ddgs.news(full_query, max_results=max_results, timelimit="w"):
+            for r in ddgs.news(full_query, max_results=max_results, timelimit="d"):
                 results.append({
                     "title": r.get("title", ""),
                     "url": r.get("url", ""),
@@ -163,11 +163,11 @@ def search_newsapi(query: str, api_key: str | None) -> list[dict]:
         return []
     try:
         import requests
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        from_24h_ago = (datetime.now(timezone.utc) - timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%S")
         url = "https://newsapi.org/v2/everything"
         resp = requests.get(url, params={
             "q": query,
-            "from": today,
+            "from": from_24h_ago,
             "language": "en",
             "sortBy": "relevancy",
             "pageSize": 5,
