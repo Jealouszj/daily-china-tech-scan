@@ -1,0 +1,16 @@
+name: Test Schedule Trigger
+
+on:
+  schedule:
+    # 每小时的第 5 分钟触发（测试用）
+    - cron: "5 * * * *"
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Log trigger time
+        run: |
+          echo "Schedule test triggered at $(date -u)"
+          echo "Event: ${{ github.event_name }}"
