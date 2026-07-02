@@ -9,7 +9,7 @@ on:
 
 permissions:
   contents: read
-  actions: write
+  issues: write
 
 env:
   PYTHONUNBUFFERED: "1"
