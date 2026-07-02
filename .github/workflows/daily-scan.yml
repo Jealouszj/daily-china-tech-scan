@@ -1,10 +1,9 @@
 name: Daily China Tech Overseas News Scan
 
 on:
-  schedule:
-    # 测试用 — 15:27 UTC 触发
-    - cron: "27 15 * * *"
-  # 允许手动触发测试
+  # 外部 cron 服务通过 repository_dispatch 触发（GitHub schedule 有 bug 不触发）
+  repository_dispatch:
+    types: [daily-scan]
   workflow_dispatch:
 
 permissions:
@@ -45,14 +44,8 @@ jobs:
           ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
           ANTHROPIC_MODEL: ${{ secrets.ANTHROPIC_MODEL }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          DEEP_MODE: ${{ github.event.inputs.deep_mode || 'true' }}
+          DEEP_MODE: ${{ github.event.client_payload.deep_mode || github.event.inputs.deep_mode || 'true' }}
           NEWSAPI_KEY: ${{ secrets.NEWSAPI_KEY }}
-          SMTP_HOST: ${{ secrets.SMTP_HOST }}
-          SMTP_PORT: ${{ secrets.SMTP_PORT }}
-          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
-          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
-          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
-          EMAIL_TO: ${{ secrets.EMAIL_TO }}
         run: python scripts/daily_scan.py
 
       - name: Upload report artifact
