@@ -478,6 +478,9 @@ def main():
     if not channels_raw:
         print("[SKIP] No YOUTUBE_CHANNELS configured.")
         print("  Set GitHub Secret: YOUTUBE_CHANNELS=@channel1,@channel2,...")
+        # Still create report file so daily_scan merge doesn't silently miss it
+        report = "## 📺 YouTube 订阅更新\n\n> ⚠️ 未配置频道列表。在 GitHub Secrets 中添加 `YOUTUBE_CHANNELS` 即可开启。\n"
+        save_report(report, Path("output"))
         return
 
     channels = parse_channels(channels_raw)
