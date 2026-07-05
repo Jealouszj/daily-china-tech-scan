@@ -107,10 +107,10 @@ def search_google_news(query: str, site_filter: str = "",
            "&hl=en-US&gl=US&ceid=US:en")
 
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "daily-china-scan/1.0"})
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            tree = ET.parse(resp)
-            root = tree.getroot()
+        import requests as reqs
+        resp = reqs.get(url, headers={"User-Agent": "Mozilla/5.0 (compatible; daily-china-scan/1.0)"}, timeout=15)
+        resp.raise_for_status()
+        root = ET.fromstring(resp.text)
 
         for item in root.findall('.//item')[:max_results]:
             title = item.findtext('title', '')

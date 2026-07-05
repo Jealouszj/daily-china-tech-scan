@@ -490,7 +490,21 @@ def main():
     total = sum(len(v) for v in videos_by_channel.values())
     print(f"Total new videos: {total}")
     if total == 0:
-        print("[INFO] No new videos today. Skipping report.")
+        print("[INFO] No new videos today.")
+        report = f"""# 📺 YouTube 订阅更新摘要 — {datetime.now(timezone.utc).strftime('%Y年%m月%d日')}
+
+> {len(channels)} 个频道今日无更新。
+
+"""
+        output_dir = Path("output")
+        report_path = save_report(report, output_dir)
+        github_token = os.environ.get("GITHUB_TOKEN", "")
+        repo = os.environ.get("GITHUB_REPOSITORY", "")
+        if github_token and repo:
+            issue_url = create_github_issue(repo, f"YouTube 订阅更新摘要 — {datetime.now(timezone.utc).strftime('%Y年%m月%d日')}", report, github_token)
+            if issue_url:
+                print(f"[OK] Issue: {issue_url}")
+        print(f"[OK] Empty report saved to {report_path}")
         return
 
     # ── Step 2: Multi-tier content extraction (token-free) ──
