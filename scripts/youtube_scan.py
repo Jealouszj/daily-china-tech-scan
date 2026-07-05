@@ -16,6 +16,8 @@ import sys
 import re
 import json
 import subprocess
+import urllib.request
+import xml.etree.ElementTree as ET
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -60,11 +62,76 @@ def parse_channels(raw: str) -> list[tuple[str, str]]:
 # YouTube fetching
 # ═══════════════════════════════════════════════════════════════
 
-def fetch_channel_videos(channel_url: str, days: int = 1) -> list[dict]:
-    """Fetch videos from a channel, filter to last `days` days in Python.
-    Avoids yt-dlp --dateafter which can behave inconsistently across environments."""
+# ── Channel ID resolution (for RSS fallback) ─────────────────
+
+def _resolve_channel_id(channel_url: str) -> str | None:
+    """Try to get YouTube channel ID from a channel URL.
+    Uses yt-dlp flat playlist (lightweight). Returns None if unavailable."""
+    try:
+        cmd = ["yt-dlp", "--flat-playlist", "--playlist-end", "1",
+               "--print", "%(channel_id)s", "--ignore-errors", channel_url]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        cid = result.stdout.strip().split("\n")[0].strip()
+        if cid and cid != "NA" and cid.startswith("UC"):
+            return cid
+    except Exception:
+        pass
+    return None
+
+
+def _fetch_via_rss(channel_id: str, days: int = 1) -> list[dict]:
+    """Fetch recent videos via YouTube RSS feed (no yt-dlp needed).
+    Reliable in GitHub Actions where yt-dlp is blocked by YouTube."""
+    import requests as reqs
     videos = []
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
+    rss_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
+
+    try:
+        resp = reqs.get(rss_url, headers={
+            "User-Agent": "Mozilla/5.0 (compatible; youtube-scan/1.0)"
+        }, timeout=15)
+        resp.raise_for_status()
+        # YouTube RSS uses default namespace — strip it for easier parsing
+        xml_text = re.sub(r'\sxmlns="[^"]+"', '', resp.text, count=1)
+        root = ET.fromstring(xml_text)
+
+        for entry in root.findall("entry"):
+            title = (entry.findtext("title", "") or "").strip()
+            link_el = entry.find("link")
+            link = link_el.get("href", "") if link_el is not None else ""
+            published = (entry.findtext("published", "") or "").strip()
+            video_id = ""
+            if "/watch?v=" in link:
+                video_id = link.split("/watch?v=")[1].split("&")[0]
+
+            pub_date = published[:10]
+            if pub_date < cutoff:
+                continue
+
+            videos.append({
+                "title": title,
+                "url": link,
+                "video_id": video_id,
+                "upload_date": pub_date.replace("-", ""),
+                "duration": "",
+                "duration_sec": 0,
+                "description": "",
+                "channel": "",
+                "channel_url": "",
+                "view_count": None,
+            })
+    except Exception as e:
+        print(f"    [!] RSS fetch error: {e}")
+
+    return videos
+
+
+def fetch_channel_videos(channel_url: str, days: int = 1) -> list[dict]:
+    """Fetch videos with yt-dlp primary, RSS fallback for CI environments."""
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y%m%d")
+
+    # ── Primary: yt-dlp (full metadata: title + description + duration) ──
     cmd = [
         "yt-dlp",
         "--playlist-end", "10",
@@ -73,22 +140,22 @@ def fetch_channel_videos(channel_url: str, days: int = 1) -> list[dict]:
         "--extractor-args", "youtube:player_client=android",
         channel_url,
     ]
+    ytdlp_videos = []
+    ytdlp_warns = 0
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
         if result.stderr:
             warns = [l for l in result.stderr.split("\n") if l.strip() and "WARNING" in l]
-            if warns:
-                print(f"    [!] yt-dlp: {len(warns)} warnings. First: {warns[0][:150]}")
+            ytdlp_warns = len(warns)
         for line in result.stdout.strip().split("\n"):
             if not line:
                 continue
             try:
                 d = json.loads(line)
                 upload_date = d.get("upload_date", "")
-                # Filter by date in Python (more reliable than --dateafter)
                 if upload_date and upload_date < cutoff:
                     continue
-                videos.append({
+                ytdlp_videos.append({
                     "title": d.get("title", ""),
                     "url": d.get("webpage_url", ""),
                     "video_id": d.get("id", ""),
@@ -103,10 +170,21 @@ def fetch_channel_videos(channel_url: str, days: int = 1) -> list[dict]:
             except json.JSONDecodeError:
                 pass
     except subprocess.TimeoutExpired:
-        print(f"  [WARN] Timeout fetching {channel_url}")
+        print(f"    [!] yt-dlp timeout")
+        ytdlp_warns = 999  # force RSS fallback
     except Exception as e:
-        print(f"  [ERROR] {type(e).__name__}: {e}")
-    return videos
+        print(f"    [!] yt-dlp error: {e}")
+        ytdlp_warns = 999
+
+    # ── Fallback: RSS if yt-dlp had issues and got nothing useful ──
+    if not ytdlp_videos and ytdlp_warns > 0:
+        print(f"    [!] yt-dlp failed ({ytdlp_warns} warnings), switching to RSS")
+        channel_id = _resolve_channel_id(channel_url)
+        if channel_id:
+            return _fetch_via_rss(channel_id, days)
+        print(f"    [!] RSS fallback unavailable (no channel ID)")
+
+    return ytdlp_videos
 
 
 def fetch_all_channels(channels: list[tuple[str, str]]) -> dict[str, list[dict]]:
