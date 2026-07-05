@@ -16,9 +16,6 @@ import sys
 import re
 import json
 import subprocess
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -437,44 +434,21 @@ def format_lightweight_report(videos_by_channel: dict[str, list[dict]]) -> str:
 # Email
 # ═══════════════════════════════════════════════════════════════
 
-def send_email(report: str, title: str) -> bool:
-    """Send report via SMTP."""
-    smtp_host = os.environ.get("SMTP_HOST", "")
-    smtp_port = os.environ.get("SMTP_PORT", "587")
-    smtp_username = os.environ.get("SMTP_USERNAME", "")
-    smtp_password = os.environ.get("SMTP_PASSWORD", "")
-    email_from = os.environ.get("EMAIL_FROM", "")
-    email_to = os.environ.get("EMAIL_TO", "")
-
-    if not all([smtp_host, smtp_username, smtp_password, email_from, email_to]):
-        print("[INFO] Email skipped: SMTP config not complete")
-        return False
-
+def create_github_issue(repo: str, title: str, body: str, token: str) -> str | None:
+    """Create a GitHub Issue with the YouTube report."""
     try:
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = title
-        msg["From"] = email_from
-        msg["To"] = email_to
-        plain = report.replace("#", "").replace("*", "").replace("`", "")[:5000]
-        msg.attach(MIMEText(plain, "plain", "utf-8"))
-        msg.attach(MIMEText(report, "html", "utf-8"))
-
-        port = int(smtp_port)
-        if port == 465:
-            with smtplib.SMTP_SSL(smtp_host, port, timeout=30) as server:
-                server.login(smtp_username, smtp_password)
-                server.send_message(msg)
-        else:
-            with smtplib.SMTP(smtp_host, port, timeout=30) as server:
-                server.starttls()
-                server.login(smtp_username, smtp_password)
-                server.send_message(msg)
-
-        print(f"[OK] Email sent to {email_to}")
-        return True
+        from github import Auth, Github
+        g = Github(auth=Auth.Token(token))
+        repo_obj = g.get_repo(repo)
+        issue = repo_obj.create_issue(
+            title=title,
+            body=body,
+            labels=["daily-scan", "youtube"],
+        )
+        return issue.html_url
     except Exception as e:
-        print(f"[ERROR] Email failed: {e}")
-        return False
+        print(f"[ERROR] Failed to create GitHub issue: {e}")
+        return None
 
 
 def save_report(report: str, output_dir: Path) -> Path:
@@ -570,7 +544,17 @@ def main():
     # ── Step 4: Output ──
     output_dir = Path("output")
     report_path = save_report(report, output_dir)
-    send_email(report, title)
+
+    # GitHub Issue (no SMTP needed — same pattern as daily_scan.py)
+    github_token = os.environ.get("GITHUB_TOKEN", "")
+    repo = os.environ.get("GITHUB_REPOSITORY", "")
+    if github_token and repo:
+        print(f"\n[INFO] Creating GitHub Issue in {repo}...")
+        issue_url = create_github_issue(repo, title, report, github_token)
+        if issue_url:
+            print(f"[OK] Issue: {issue_url}")
+    else:
+        print("[INFO] GitHub Issue skipped: GITHUB_TOKEN or GITHUB_REPOSITORY not set")
 
     print("\n" + "=" * 60)
     print("SCAN COMPLETE")
