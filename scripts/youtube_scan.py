@@ -70,12 +70,15 @@ def fetch_channel_videos(channel_url: str, days: int = 1) -> list[dict]:
         "--dateafter", dateafter,
         "--playlist-end", "5",
         "--dump-json",
-        "--no-warnings",
         "--ignore-errors",
         channel_url,
     ]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        if result.stderr:
+            warns = [l for l in result.stderr.split("\n") if l.strip() and "WARNING" in l]
+            if warns:
+                print(f"    [!] yt-dlp: {len(warns)} warnings")
         for line in result.stdout.strip().split("\n"):
             if not line:
                 continue
