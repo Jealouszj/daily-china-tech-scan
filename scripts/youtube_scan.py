@@ -27,6 +27,7 @@ from pathlib import Path
 def parse_channels(raw: str) -> list[tuple[str, str]]:
     """Parse channel list, return [(label, url), ...].
     Accepts: @handle, UC...id, or full https:// URL."""
+    from urllib.parse import unquote
     channels = []
     for token in raw.split(","):
         token = token.strip()
@@ -37,16 +38,16 @@ def parse_channels(raw: str) -> list[tuple[str, str]]:
             if "/videos" not in url:
                 url += "/videos"
             if "/@" in url:
-                label = url.split("/@")[1].split("/")[0]
+                label = unquote(url.split("/@")[1].split("/")[0])
             elif "/channel/" in url:
-                label = url.split("/channel/")[1].split("/")[0][:12]
+                label = unquote(url.split("/channel/")[1].split("/")[0][:12])
             else:
-                label = url
+                label = unquote(url)
         elif token.startswith("@"):
-            label = token[1:]
+            label = unquote(token[1:])
             url = f"https://www.youtube.com/@{label}/videos"
         elif token.startswith("UC"):
-            label = token[:16]
+            label = unquote(token[:16])
             url = f"https://www.youtube.com/channel/{token}/videos"
         else:
             print(f"[WARN] Unknown channel format: {token}, skipping")
@@ -491,20 +492,13 @@ def main():
     print(f"Total new videos: {total}")
     if total == 0:
         print("[INFO] No new videos today.")
-        report = f"""# 📺 YouTube 订阅更新摘要 — {datetime.now(timezone.utc).strftime('%Y年%m月%d日')}
+        report = f"""## 📺 YouTube 订阅更新
 
 > {len(channels)} 个频道今日无更新。
-
 """
         output_dir = Path("output")
-        report_path = save_report(report, output_dir)
-        github_token = os.environ.get("GITHUB_TOKEN", "")
-        repo = os.environ.get("GITHUB_REPOSITORY", "")
-        if github_token and repo:
-            issue_url = create_github_issue(repo, f"YouTube 订阅更新摘要 — {datetime.now(timezone.utc).strftime('%Y年%m月%d日')}", report, github_token)
-            if issue_url:
-                print(f"[OK] Issue: {issue_url}")
-        print(f"[OK] Empty report saved to {report_path}")
+        save_report(report, output_dir)
+        print("[OK] Empty report saved.")
         return
 
     # ── Step 2: Multi-tier content extraction (token-free) ──
@@ -555,20 +549,9 @@ def main():
         inner = format_lightweight_report(videos_by_channel)
         report = f"# 📺 {title}\n\n{inner}"
 
-    # ── Step 4: Output ──
+    # ── Step 4: Output (report merged by daily_scan.py into one Issue) ──
     output_dir = Path("output")
     report_path = save_report(report, output_dir)
-
-    # GitHub Issue (no SMTP needed — same pattern as daily_scan.py)
-    github_token = os.environ.get("GITHUB_TOKEN", "")
-    repo = os.environ.get("GITHUB_REPOSITORY", "")
-    if github_token and repo:
-        print(f"\n[INFO] Creating GitHub Issue in {repo}...")
-        issue_url = create_github_issue(repo, title, report, github_token)
-        if issue_url:
-            print(f"[OK] Issue: {issue_url}")
-    else:
-        print("[INFO] GitHub Issue skipped: GITHUB_TOKEN or GITHUB_REPOSITORY not set")
 
     print("\n" + "=" * 60)
     print("SCAN COMPLETE")

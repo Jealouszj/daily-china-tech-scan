@@ -11,6 +11,7 @@ WebSearch(英文源) → 关键文章抓取 → Anthropic API 合成 → GitHub 
 """
 
 import os
+import re
 import sys
 import json
 import time
@@ -437,6 +438,15 @@ def main():
         print("\n[INFO] Using lightweight aggregation...")
         inner = lightweight_synthesis(search_text, unique_results)
         report = f"# 🌍 {title}\n\n{inner}"
+
+    # --- Merge YouTube report if available ---
+    youtube_report_path = Path("output/youtube-report.md")
+    if youtube_report_path.exists():
+        youtube_content = youtube_report_path.read_text(encoding="utf-8")
+        # Strip the top-level heading from YouTube report (already has ##)
+        youtube_content = re.sub(r'^# 📺.*\n', '', youtube_content)
+        report += f"\n\n---\n\n{youtube_content.strip()}\n"
+        print("[INFO] Merged YouTube report into daily report")
 
     # --- Output ---
     output_dir = Path("output")

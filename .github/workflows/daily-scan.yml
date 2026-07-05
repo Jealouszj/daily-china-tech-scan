@@ -38,7 +38,15 @@ jobs:
       - name: Install dependencies
         run: pip install -r scripts/requirements.txt
 
-      - name: Run daily scan
+      - name: Run YouTube scan
+        env:
+          YOUTUBE_CHANNELS: ${{ secrets.YOUTUBE_CHANNELS }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
+          ANTHROPIC_MODEL: ${{ secrets.ANTHROPIC_MODEL }}
+        run: python scripts/youtube_scan.py
+
+      - name: Run daily scan (includes YouTube report merge)
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
@@ -54,27 +62,10 @@ jobs:
           EMAIL_TO: ${{ secrets.EMAIL_TO }}
         run: python scripts/daily_scan.py
 
-      - name: Run YouTube scan
-        env:
-          YOUTUBE_CHANNELS: ${{ secrets.YOUTUBE_CHANNELS }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
-          ANTHROPIC_MODEL: ${{ secrets.ANTHROPIC_MODEL }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: python scripts/youtube_scan.py
-
-      - name: Upload report artifacts
+      - name: Upload combined report artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: daily-china-tech-report
+          name: daily-combined-report
           path: output/report.md
-          retention-days: 30
-
-      - name: Upload YouTube report artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: youtube-update-report
-          path: output/youtube-report.md
           retention-days: 30
