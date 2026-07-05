@@ -46,12 +46,40 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DEEP_MODE: ${{ github.event.client_payload.deep_mode || github.event.inputs.deep_mode || 'true' }}
           NEWSAPI_KEY: ${{ secrets.NEWSAPI_KEY }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
         run: python scripts/daily_scan.py
 
-      - name: Upload report artifact
+      - name: Run YouTube scan
+        env:
+          YOUTUBE_CHANNELS: ${{ secrets.YOUTUBE_CHANNELS }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
+          ANTHROPIC_MODEL: ${{ secrets.ANTHROPIC_MODEL }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+        run: python scripts/youtube_scan.py
+
+      - name: Upload report artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: daily-china-tech-report
           path: output/report.md
+          retention-days: 30
+
+      - name: Upload YouTube report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: youtube-update-report
+          path: output/youtube-report.md
           retention-days: 30
