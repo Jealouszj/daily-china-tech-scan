@@ -70,6 +70,7 @@ def fetch_channel_videos(channel_url: str, days: int = 1) -> list[dict]:
         "--playlist-end", "10",
         "--dump-json",
         "--ignore-errors",
+        "--extractor-args", "youtube:player_client=android",
         channel_url,
     ]
     try:
@@ -77,7 +78,7 @@ def fetch_channel_videos(channel_url: str, days: int = 1) -> list[dict]:
         if result.stderr:
             warns = [l for l in result.stderr.split("\n") if l.strip() and "WARNING" in l]
             if warns:
-                print(f"    [!] yt-dlp: {len(warns)} warnings")
+                print(f"    [!] yt-dlp: {len(warns)} warnings. First: {warns[0][:150]}")
         for line in result.stdout.strip().split("\n"):
             if not line:
                 continue
