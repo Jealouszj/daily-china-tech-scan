@@ -60,7 +60,7 @@ def parse_channels(raw: str) -> list[tuple[str, str]]:
 # YouTube fetching
 # ═══════════════════════════════════════════════════════════════
 
-def fetch_channel_videos(channel_url: str, days: int = 2) -> list[dict]:
+def fetch_channel_videos(channel_url: str, days: int = 1) -> list[dict]:
     """Fetch videos from a channel published in the last `days` days.
     Uses full extraction (not flat-playlist) to get description + upload_date."""
     videos = []
