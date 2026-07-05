@@ -66,7 +66,8 @@ def parse_channels(raw: str) -> list[tuple[str, str]]:
 
 def _resolve_channel_id(channel_url: str) -> str | None:
     """Try to get YouTube channel ID from a channel URL.
-    Uses yt-dlp flat playlist (lightweight). Returns None if unavailable."""
+    Uses yt-dlp flat playlist first, falls back to page HTML scraping."""
+    # Method 1: yt-dlp flat playlist (fast, no player responses needed)
     try:
         cmd = ["yt-dlp", "--flat-playlist", "--playlist-end", "1",
                "--print", "%(channel_id)s", "--ignore-errors", channel_url]
@@ -76,6 +77,21 @@ def _resolve_channel_id(channel_url: str) -> str | None:
             return cid
     except Exception:
         pass
+
+    # Method 2: scrape channel page HTML for canonical URL
+    try:
+        import requests as reqs
+        # Use @handle URL (not /videos) for the main channel page
+        page_url = channel_url.replace("/videos", "") if channel_url.endswith("/videos") else channel_url
+        resp = reqs.get(page_url, headers={
+            "User-Agent": "Mozilla/5.0 (compatible; youtube-scan/1.0)"
+        }, timeout=10)
+        match = re.search(r'https://www\.youtube\.com/channel/(UC[\w-]+)', resp.text)
+        if match:
+            return match.group(1)
+    except Exception:
+        pass
+
     return None
 
 
