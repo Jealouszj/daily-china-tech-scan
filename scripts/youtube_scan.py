@@ -61,14 +61,13 @@ def parse_channels(raw: str) -> list[tuple[str, str]]:
 # ═══════════════════════════════════════════════════════════════
 
 def fetch_channel_videos(channel_url: str, days: int = 1) -> list[dict]:
-    """Fetch videos from a channel published in the last `days` days.
-    Uses full extraction (not flat-playlist) to get description + upload_date."""
+    """Fetch videos from a channel, filter to last `days` days in Python.
+    Avoids yt-dlp --dateafter which can behave inconsistently across environments."""
     videos = []
-    dateafter = f"today-{days}days"
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y%m%d")
     cmd = [
         "yt-dlp",
-        "--dateafter", dateafter,
-        "--playlist-end", "5",
+        "--playlist-end", "10",
         "--dump-json",
         "--ignore-errors",
         channel_url,
@@ -84,11 +83,15 @@ def fetch_channel_videos(channel_url: str, days: int = 1) -> list[dict]:
                 continue
             try:
                 d = json.loads(line)
+                upload_date = d.get("upload_date", "")
+                # Filter by date in Python (more reliable than --dateafter)
+                if upload_date and upload_date < cutoff:
+                    continue
                 videos.append({
                     "title": d.get("title", ""),
                     "url": d.get("webpage_url", ""),
                     "video_id": d.get("id", ""),
-                    "upload_date": d.get("upload_date", ""),
+                    "upload_date": upload_date,
                     "duration": d.get("duration_string", ""),
                     "duration_sec": d.get("duration") or 0,
                     "description": d.get("description") or "",
