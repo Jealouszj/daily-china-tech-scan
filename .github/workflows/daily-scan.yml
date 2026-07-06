@@ -51,7 +51,18 @@ jobs:
           ANTHROPIC_MODEL: ${{ secrets.ANTHROPIC_MODEL }}
         run: python scripts/youtube_scan.py
 
-      - name: Run daily scan (includes YouTube report merge)
+      - name: Restore holdings state cache
+        uses: actions/cache@v4
+        with:
+          path: output/holdings_cache.json
+          key: holdings-state-${{ github.run_id }}
+          restore-keys: |
+            holdings-state-
+
+      - name: Run holdings scan
+        run: python scripts/holdings_scan.py
+
+      - name: Run daily scan (includes YouTube + holdings report merge)
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}

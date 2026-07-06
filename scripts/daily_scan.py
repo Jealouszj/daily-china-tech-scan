@@ -448,6 +448,15 @@ def main():
         report += f"\n\n---\n\n{youtube_content.strip()}\n"
         print("[INFO] Merged YouTube report into daily report")
 
+    # --- Merge Holdings report if available ---
+    holdings_report_path = Path("output/holdings-report.md")
+    if holdings_report_path.exists():
+        holdings_content = holdings_report_path.read_text(encoding="utf-8")
+        # Strip the top-level heading from holdings report
+        holdings_content = re.sub(r'^# 📊.*\n', '', holdings_content)
+        report += f"\n\n---\n\n{holdings_content.strip()}\n"
+        print("[INFO] Merged holdings report into daily report")
+
     # --- Output ---
     output_dir = Path("output")
     report_path = save_report(report, output_dir)
