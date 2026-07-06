@@ -250,13 +250,11 @@ would NOT cover, or cover very differently. Be specific with numbers and sources
             system=SYNTHESIS_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": prompt}],
         )
-        # Extract text from all content blocks
+        # Extract text from content blocks (skip ThinkingBlock — thinking is internal reasoning, not output)
         text_parts = []
         for block in response.content:
             if hasattr(block, 'text') and block.text:
                 text_parts.append(block.text)
-            elif hasattr(block, 'thinking') and block.thinking:
-                text_parts.append(block.thinking)
         if not text_parts:
             btypes = [getattr(b, 'type', type(b).__name__) for b in response.content]
             print(f"[WARN] No text in synthesis response blocks: {btypes}")
