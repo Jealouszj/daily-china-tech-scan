@@ -250,12 +250,18 @@ would NOT cover, or cover very differently. Be specific with numbers and sources
             system=SYNTHESIS_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": prompt}],
         )
-        # Extract text from all content blocks (skip ThinkingBlock from DeepSeek)
+        # Extract text from all content blocks
         text_parts = []
         for block in response.content:
-            if hasattr(block, 'text'):
+            if hasattr(block, 'text') and block.text:
                 text_parts.append(block.text)
-        return "\n".join(text_parts) if text_parts else "(empty response)"
+            elif hasattr(block, 'thinking') and block.thinking:
+                text_parts.append(block.thinking)
+        if not text_parts:
+            btypes = [getattr(b, 'type', type(b).__name__) for b in response.content]
+            print(f"[WARN] No text in synthesis response blocks: {btypes}")
+            return "(AI 响应为空，可能为 DeepSeek thinking 模式异常)"
+        return "\n".join(text_parts)
     except Exception as e:
         print(f"[ERROR] API call failed: {e}")
         return f"API 合成失败: {e}\n\n以下为原始搜索结果：\n\n{search_text}"

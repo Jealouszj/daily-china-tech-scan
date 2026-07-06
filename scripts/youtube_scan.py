@@ -393,8 +393,14 @@ def ai_summarize_video(ai_input: str, client, model: str) -> str:
         )
         text_parts = []
         for block in response.content:
-            if hasattr(block, 'text'):
+            if hasattr(block, 'text') and block.text:
                 text_parts.append(block.text)
+            elif hasattr(block, 'thinking') and block.thinking:
+                text_parts.append(block.thinking)
+        if not text_parts:
+            btypes = [getattr(b, 'type', type(b).__name__) for b in response.content]
+            print(f"    [WARN] No text in response blocks: {btypes}")
+            return "(AI 摘要失败)"
         return "".join(text_parts).strip()[:200]
     except Exception as e:
         print(f"    [WARN] AI video summary failed: {e}")
@@ -491,9 +497,16 @@ Produce the daily report now."""
         )
         text_parts = []
         for block in response.content:
-            if hasattr(block, 'text'):
+            if hasattr(block, 'text') and block.text:
                 text_parts.append(block.text)
-        report = "\n".join(text_parts) if text_parts else "(empty response)"
+            elif hasattr(block, 'thinking') and block.thinking:
+                text_parts.append(block.thinking)
+        if not text_parts:
+            btypes = [getattr(b, 'type', type(b).__name__) for b in response.content]
+            print(f"    [WARN] No text in daily report response blocks: {btypes}")
+            # Fall back to lightweight mode instead of returning empty
+            return format_lightweight_report(videos_by_channel)
+        report = "\n".join(text_parts)
 
         # Append token stats
         tier0 = sum(1 for vv in videos_by_channel.values() for v in vv if v.get("summary_source") == "title")
