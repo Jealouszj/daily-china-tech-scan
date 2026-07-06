@@ -221,7 +221,7 @@ def fetch_all_channels(channels: list[tuple[str, str]]) -> dict[str, list[dict]]
 
 # Patterns for sponsor/promo boilerplate to strip from descriptions
 _SPONSOR_PATTERNS = [
-    re.compile(r, re.I | re.DOTALL)
+    re.compile(r, re.I)
     for r in [
         r'\b(?:Thanks|Thank you|Thanks to|Sponsored by|Sponsor|This video is sponsored|Paid promotion|AD|#ad|#sponsored)\b[^\n]*',
         r'\b(?:感谢|赞助|广告|推广)\b[^\n]*',
@@ -249,6 +249,52 @@ _STRUCTURED_PATTERNS = [
     re.compile(r'[一二三四五六七八九十]+[\.\、]'),  # Chinese numbered
 ]
 
+# Thresholds for adaptive summarization (in characters, after cleaning)
+# Note: effective threshold is lower than user-facing "300 chars" because
+# sponsor/promo stripping typically removes 20-35% of raw description text.
+_RICH_DESC_THRESHOLD = 250   # >250 cleaned chars = rich, AI-summarize to ~300 chars
+_MEDIUM_DESC_THRESHOLD = 50  # 50-250 chars = medium, check info density
+
+
+def _detect_information_density(text: str) -> int:
+    """Score the information density of a description (0-10+).
+    Higher scores = more substantive financial/trading content.
+    Used to decide whether a medium-length description is worth keeping."""
+    if len(text) < 20:
+        return 0
+    signals = [
+        # Stock codes: A-shares (6-digit), tickers
+        (r'\b\d{5,6}\b', 2),                          # Numeric codes (likely A-shares)
+        (r'\b[A-Z]{2,5}\b', 1, False),                # US tickers (uppercase only, no re.I)
+        # Financial metrics (high weight)
+        (r'\d+[\.\d]*%', 1),                          # Percentages
+        (r'[¥$]\s*\d+', 1),                       # Currency amounts
+        (r'\d+[\.\d]*(?:亿|万|k|K|w|W|B|M)\b', 1),   # Quantities with units
+        # Directional views (high weight — key for investment content)
+        (r'(?:看[多空涨跌]|持仓|加仓|减仓|清仓|建仓|止盈|止损|做[多空])', 2),
+        (r'(?:bullish|bearish|long|short|hold|buy|sell|target)', 1),
+        # Financial terms
+        (r'(?:估值|业绩|营收|利润|增速|PE|PB|ROE|EPS|毛利|净利|现金流)', 1),
+        (r'(?:板块|赛道|龙头|题材|概念|热点|主线|趋势|震荡|突破|回调)', 1),
+        (r'(?:建议|推荐|策略|仓位|配置|组合|风险|收益)', 2),
+        # Data points
+        (r'(?:涨幅|跌幅|涨了|跌了|上涨|下跌|新高|新低|反弹)', 1),
+        (r'(?:预期|预测|目标价|评级|上调|下调)', 1),
+        # Time horizons
+        (r'(?:短线|中线|长线|短期|中期|长期|本周|本月|本季)', 1),
+    ]
+    score = 0
+    for entry in signals:
+        if len(entry) == 3:
+            pat, weight, _use_ignorecase = entry
+            flags = 0
+        else:
+            pat, weight = entry
+            flags = re.I
+        if re.search(pat, text, flags):
+            score += weight
+    return score
+
 
 def clean_description(desc: str) -> tuple[str, int, bool]:
     """Strip sponsor/promo boilerplate from description.
@@ -271,52 +317,74 @@ def extract_title_summary(title: str) -> str | None:
     English titles like "Antigravity A1: A New Take on Drones!" are NOT
     self-summarizing — they're catchy hooks, not content summaries.
     Returns summary string or None."""
+    # Quick check: title with specific financial data is always useful
+    has_fin_data = bool(re.search(
+        r'\d+[\.\d]*%|'
+        r'(?:涨|跌)\d+[\.\d]*%|'
+        r'\d{5,6}\b|'          # A-share codes
+        r'[¥$]\d+',            # Currency amounts
+        title
+    ))
     # Chinese news-style: "Channel[Date]：key1；key2；key3" with dense info
-    # Must be long enough AND have substantive content after separator
-    if len(title) < 40:
+    if len(title) < 22 and not has_fin_data:
         return None
     # Check for news-style format with substantial content after ：/:
     if "：" in title or ":" in title:
         parts = re.split(r'[：:]', title, maxsplit=1)
-        if len(parts) == 2 and len(parts[1].strip()) >= 30:
+        if len(parts) == 2 and len(parts[1].strip()) >= 18:
             return title  # Entire title IS the summary
     # Semicolon-separated key points (explicit Chinese news format)
     if title.count("；") >= 2 or title.count(";") >= 2:
         return title
     # Long dense title with substantive punctuation
-    if len(title) >= 65 and (title.count("，") >= 2 or title.count(",") >= 2):
+    if len(title) >= 50 and (title.count("，") >= 2 or title.count(",") >= 2):
+        return title
+    # Short but contains financial data → use directly
+    if has_fin_data and len(title) >= 15:
         return title
     return None
 
 
-def extract_description_summary(desc: str, effective_len: int, is_structured: bool) -> str | None:
-    """Tier 1: Extract key points from a rich description.
-    Returns structured summary or None if description is too thin."""
-    if effective_len < 50:
-        return None  # Too short to be useful
-    if effective_len < 200 and not is_structured:
-        return None  # Short + unstructured = likely noise
+def extract_description_summary(desc: str, effective_len: int, is_structured: bool) -> tuple[str | None, int, bool]:
+    """Tier 1: Classify and extract from description.
+    Returns (summary_or_none, info_density_score, is_rich_for_ai).
 
-    if is_structured:
-        # Return first ~400 chars of structured content
-        lines = desc.strip().split('\n')
-        key_lines = []
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
-            if any(pat.search(line) for pat in _STRUCTURED_PATTERNS):
-                key_lines.append(line)
-            elif len(line) > 20:
-                key_lines.append(line)
-            if len('\n'.join(key_lines)) > 400:
-                break
-        return '\n'.join(key_lines)
-    else:
-        # Unstructured but long: return first 300 chars
-        return desc[:300]
+    Strategy:
+      - > 300 chars: "rich" — pass to AI for ~300 char structured summary
+        (don't naive-truncate; AI preserves key data better)
+      - 50–300 chars: check information density
+        - High density (>=3): use directly (info-rich enough as-is)
+        - Low density (<3): might need AI if there's some substance
+      - < 50 chars: too thin, skip to title/AI tier
+    """
+    density = _detect_information_density(desc)
 
-    return None
+    if effective_len < _MEDIUM_DESC_THRESHOLD:
+        # Short but highly dense? Use directly instead of wasting AI tokens
+        if density >= 5:
+            return desc.strip(), density, False
+        return None, density, False  # Too short
+
+    if effective_len > _RICH_DESC_THRESHOLD:
+        # Rich description — AI should summarize to ~300 chars
+        # Don't truncate here; pass full text to AI for proper summarization
+        return None, density, True  # is_rich_for_ai=True
+
+    # Medium-length (50-300 chars): check information density
+    if density >= 3:
+        # High info density — use directly, no AI needed
+        if is_structured:
+            lines = [l.strip() for l in desc.strip().split('\n') if l.strip()]
+            return '\n'.join(lines), density, False
+        return desc.strip(), density, False
+
+    # Medium length but low density — check if worth AI summarization
+    if density >= 1 and effective_len >= 100:
+        # Some substance, let AI clean it up
+        return None, density, True
+
+    # Too vague — skip to title tier
+    return None, density, False
 
 
 def extract_content(video: dict) -> dict:
@@ -326,6 +394,8 @@ def extract_content(video: dict) -> dict:
       - summary_source: 'title' | 'description' | None
       - needs_ai: bool — True if Tier 0+1 insufficient, AI should summarize
       - ai_input: compact text for AI summarization (only if needs_ai)
+      - info_density: int — information density score (for adaptive AI prompting)
+      - desc_is_rich: bool — True if description > 300 chars (for adaptive AI prompt)
     """
     title = video.get("title", "")
     desc = video.get("description", "")
@@ -333,21 +403,41 @@ def extract_content(video: dict) -> dict:
 
     cleaned_desc, eff_len, is_structured = clean_description(desc)
 
-    result = {**video, "cleaned_description": cleaned_desc}
+    result = {**video, "cleaned_description": cleaned_desc,
+              "info_density": 0, "desc_is_rich": False}
 
-    # Priority: description first (more detailed), title as fallback
-    # "有些博主会把核心观点全部写在简介里" — prefer description when rich
+    # ── Tier 1: Description-based extraction ──
+    desc_result, density, is_rich = extract_description_summary(
+        cleaned_desc, eff_len, is_structured
+    )
+    result["info_density"] = density
+    result["desc_is_rich"] = is_rich
 
-    # Tier 1: Rich description? (check FIRST — more detail than even best title)
-    desc_summary = extract_description_summary(cleaned_desc, eff_len, is_structured)
-    if desc_summary:
-        result["extracted_summary"] = desc_summary
+    if desc_result is not None:
+        # Medium-length, high-density description — use directly
+        result["extracted_summary"] = desc_result
         result["summary_source"] = "description"
         result["needs_ai"] = False
         result["ai_input"] = ""
         return result
 
-    # Tier 0: Title self-summarizing? (fallback when description is thin)
+    if is_rich:
+        # Rich description (> 300 chars) — needs AI for ~300 char structured summary
+        # Provide full description so AI has all context
+        ai_input = (
+            f"标题：{title}\n"
+            f"时长：{video.get('duration', '?')}\n"
+            f"简介（{eff_len}字，信息密度{density}分，内容详尽，请保留关键数据）：\n"
+            f"{cleaned_desc}\n"
+        )
+        result["extracted_summary"] = ""
+        result["summary_source"] = None
+        result["needs_ai"] = True
+        result["ai_input"] = ai_input[:2000]  # Allow up to 2000 chars for rich descriptions
+        result["effective_desc_len"] = eff_len  # Pass through for adaptive token budget
+        return result
+
+    # ── Tier 0: Title self-summarizing? ──
     title_summary = extract_title_summary(title)
     if title_summary:
         result["extracted_summary"] = title_summary
@@ -356,15 +446,16 @@ def extract_content(video: dict) -> dict:
         result["ai_input"] = ""
         return result
 
-    # Tier 2: Need AI help (thin description, uninformative title)
-    # Compact input: title + whatever description we have (max 500 chars)
+    # ── Tier 2: Need AI help ──
     ai_input = f"标题：{title}\n时长：{video.get('duration', '?')}\n"
     if cleaned_desc:
-        ai_input += f"简介：{cleaned_desc[:500]}\n"
+        ai_input += f"简介（{eff_len}字，信息密度{density}分）：\n{cleaned_desc}\n"
+    else:
+        ai_input += "（无简介，仅根据标题判断内容）\n"
     result["extracted_summary"] = ""
     result["summary_source"] = None
     result["needs_ai"] = True
-    result["ai_input"] = ai_input[:800]  # Hard cap on input
+    result["ai_input"] = ai_input[:1500]
     return result
 
 
@@ -372,21 +463,64 @@ def extract_content(video: dict) -> dict:
 # AI: Individual video summary (Tier 2 — only when needed)
 # ═══════════════════════════════════════════════════════════════
 
-VIDEO_SUMMARY_PROMPT = """You summarize YouTube videos in 80-150 Chinese characters.
-Rules:
-1. Extract the single most important insight or argument
-2. Include specific data/numbers if present
-3. No fluff, no "这个视频讲了..."
-4. If the input is mostly sponsor/promo text, say "内容以推广为主，无实质观点"
-Output format: just the summary text, nothing else."""
+VIDEO_SUMMARY_PROMPT = """You summarize financial/trading YouTube videos in Chinese.
+Your goal: preserve enough detail to be useful, but stay concise enough to scan quickly.
+
+## Length rules (ADAPTIVE)
+- If input has RICH description (>300 chars with stock picks, positions, forecasts):
+  → Summarize to **200-350 Chinese characters**. Preserve: tickers/stock codes, price ranges,
+    position recommendations (增持/减持/持有), bullish/bearish views, short/medium/long-term
+    outlooks, key support/resistance levels, specific % targets.
+- If input has MEDIUM description (100-300 chars with some data):
+  → Summarize to **120-200 Chinese characters**. Extract the core thesis with key numbers.
+- If input has THIN description (title only or vague text):
+  → Summarize to **60-120 Chinese characters**. Extract the single most important takeaway.
+
+## What to KEEP (high priority)
+1. Specific stock codes, tickers, sectors mentioned
+2. Position changes: 增持/减持/建仓/减仓/清仓
+3. Time-horizon views: 短线/中线/长线, short-term/mid-term/long-term
+4. Price targets or ranges, key levels
+5. Concrete data: % changes, valuations, volume signals
+6. Risk warnings or catalyst events
+
+## What to DROP (low priority)
+1. Sponsor/promo text, "订阅点赞" boilerplate
+2. Generic market commentary without specifics
+3. Repetitive phrases, filler words
+4. Personal anecdotes not related to investment decisions
+
+## Output format
+Just the summary text. No prefix like "这个视频讲了..." or "总结：".
+If input contains NO substantive financial information (just promo/ads/vague talk), say: "内容以推广为主，无实质投资观点"
+"""
 
 
-def ai_summarize_video(ai_input: str, client, model: str) -> str:
-    """Call AI to summarize a single video (compact)."""
+def ai_summarize_video(ai_input: str, client, model: str,
+                       desc_is_rich: bool = False,
+                       info_density: int = 0,
+                       effective_desc_len: int = 0) -> str:
+    """Call AI to summarize a single video with adaptive output length.
+    - Truly rich (>300 chars) → max_tokens=1000, ~300 char summary
+    - Medium-with-substance (100-300 chars) → max_tokens=500, ~150 char summary
+    - Thin (<100 chars or density 0) → max_tokens=300, ~80 char summary
+    """
+    # Adaptive token budget: prioritize truly rich over medium-with-substance
+    if desc_is_rich and effective_desc_len > _RICH_DESC_THRESHOLD:
+        max_tokens = 1000
+    elif desc_is_rich:  # Medium with substance (100-300 chars, density 1-2)
+        max_tokens = 500
+    elif info_density >= 3:
+        max_tokens = 600
+    elif info_density >= 1:
+        max_tokens = 400
+    else:
+        max_tokens = 300
+
     try:
         response = client.messages.create(
             model=model,
-            max_tokens=300,
+            max_tokens=max_tokens,
             temperature=0.3,
             system=VIDEO_SUMMARY_PROMPT,
             messages=[{"role": "user", "content": ai_input}],
@@ -399,7 +533,18 @@ def ai_summarize_video(ai_input: str, client, model: str) -> str:
             btypes = [getattr(b, 'type', type(b).__name__) for b in response.content]
             print(f"    [WARN] No text in response blocks: {btypes}")
             return "(AI 摘要失败)"
-        return "".join(text_parts).strip()[:200]
+        summary = "".join(text_parts).strip()
+        # Soft truncation — only if wildly over target
+        if desc_is_rich and len(summary) > 500:
+            # Find last sentence boundary within 500 chars
+            trunc_point = summary[:500].rfind("。")
+            if trunc_point > 200:
+                summary = summary[:trunc_point + 1]
+        elif not desc_is_rich and len(summary) > 300:
+            trunc_point = summary[:300].rfind("。")
+            if trunc_point > 80:
+                summary = summary[:trunc_point + 1]
+        return summary
     except Exception as e:
         print(f"    [WARN] AI video summary failed: {e}")
         return "(AI 摘要失败)"
@@ -422,19 +567,22 @@ Your job is to FORMAT and PRIORITIZE, not to re-summarize.
 
 ### 📺 其他更新
 Remaining videos in a compact list:
-- **[title](url)**（channel | duration）— use the extracted summary directly (80-150 chars each)
+- **[title](url)**（channel | duration）— use the extracted summary directly.
+  Keep summaries as provided; only trim if they exceed 350 characters.
+  Preserve: stock codes, position recommendations, price targets, % data.
 
 ### 📊 今日概览
 - X channels, Y videos total
-- Trending themes (if any)
+- Trending themes (if any): e.g. "多数频道关注AI/半导体", "A股情绪偏谨慎"
 - Most active channel today
 
 ## Rules
-1. **Keep the extracted summaries** — don't re-summarize, just trim if too long
-2. If a video's summary is its own title, that's fine — format it cleanly
+1. **Preserve the extracted summaries** — don't re-compress them; they're already tailored to input richness
+2. Format URLs as markdown links: `[title](url)`
 3. Opinionated prioritization: genuine insights > news roundups > sponsored/fluff
-4. Add at end: "以上摘要由 AI 自动整理，视频核心观点来自标题/简介提取，以实际观看为准。"
-5. No more than 1500 chars total output
+4. If a video's summary is its own title, format it cleanly without repeating
+5. Add at end: "以上摘要由 AI 自动整理，视频核心观点来自标题/简介提取，以实际观看为准。"
+6. Total output: max 3000 chars
 """
 
 
@@ -458,9 +606,13 @@ def synthesize_daily_report(videos_by_channel: dict[str, list[dict]],
         for v in videos:
             if v.get("needs_ai"):
                 ai_calls += 1
-                print(f"    AI summarizing: {v['title'][:50]}...")
+                print(f"    AI summarizing: {v['title'][:50]}... "
+                      f"(rich={v.get('desc_is_rich', False)}, density={v.get('info_density', 0)})")
                 v["extracted_summary"] = ai_summarize_video(
-                    v["ai_input"], client, model
+                    v["ai_input"], client, model,
+                    desc_is_rich=v.get("desc_is_rich", False),
+                    info_density=v.get("info_density", 0),
+                    effective_desc_len=v.get("effective_desc_len", 0),
                 )
                 v["summary_source"] = "ai"
 
@@ -489,7 +641,7 @@ Produce the daily report now."""
     try:
         response = client.messages.create(
             model=model,
-            max_tokens=2500,
+            max_tokens=4000,
             system=DAILY_REPORT_PROMPT,
             messages=[{"role": "user", "content": prompt}],
         )
@@ -507,7 +659,12 @@ Produce the daily report now."""
         tier0 = sum(1 for vv in videos_by_channel.values() for v in vv if v.get("summary_source") == "title")
         tier1 = sum(1 for vv in videos_by_channel.values() for v in vv if v.get("summary_source") == "description")
         tier2 = ai_calls
-        report += f"\n\n> 📊 摘要来源：标题自包含 {tier0} | 简介提取 {tier1} | AI 辅助 {tier2}"
+        tier2_rich = sum(1 for vv in videos_by_channel.values() for v in vv
+                         if v.get("summary_source") == "ai" and v.get("desc_is_rich"))
+        tier2_thin = tier2 - tier2_rich
+        report += f"\n\n> 📊 摘要来源：标题自包含 {tier0} | 简介直接使用 {tier1}"
+        if tier2 > 0:
+            report += f" | AI 辅助 {tier2}（其中详情摘要 {tier2_rich}，简明摘要 {tier2_thin}）"
         return report
     except Exception as e:
         print(f"[ERROR] Report synthesis failed: {e}")
@@ -534,7 +691,7 @@ def format_lightweight_report(videos_by_channel: dict[str, list[dict]]) -> str:
             report += f"- **[{v['title']}]({v['url']})** ({v['duration']})\n"
             summary = v.get("extracted_summary", "")
             if summary:
-                report += f"  > {summary[:200]}\n"
+                report += f"  > {summary[:400]}\n"
             report += "\n"
     report += "\n> ⚠️ 轻量模式：配置 ANTHROPIC_API_KEY 可开启 AI 智能摘要。\n"
     return report
@@ -614,9 +771,9 @@ def main():
         return
 
     # ── Step 2: Multi-tier content extraction (token-free) ──
-    print("\n── Step 2: Extracting content (Tier 0–1, 0 tokens) ──")
+    print("\n── Step 2: Extracting content (Tier 0–1, adaptive) ──")
     ai_needed = 0
-    extracted = {"title": 0, "description": 0}
+    extracted = {"title": 0, "description": 0, "description_rich": 0}
     for channel, videos in videos_by_channel.items():
         for i, v in enumerate(videos):
             enriched = extract_content(v)
@@ -627,12 +784,22 @@ def main():
                 print(f"  ✓ [{channel}] title self-summarizing ({len(v['title'])} chars)")
             elif src == "description":
                 extracted["description"] += 1
-                print(f"  ✓ [{channel}] description extracted ({len(enriched['extracted_summary'])} chars)")
+                density = enriched.get("info_density", 0)
+                print(f"  ✓ [{channel}] description direct-use (density={density}, {len(enriched['extracted_summary'])} chars)")
             else:
                 ai_needed += 1
-                print(f"  ⟳ [{channel}] needs AI: {v['title'][:50]}...")
+                is_rich = enriched.get("desc_is_rich", False)
+                density = enriched.get("info_density", 0)
+                if is_rich:
+                    extracted["description_rich"] += 1
+                    print(f"  ⟳ [{channel}] RICH desc→AI ({len(enriched.get('cleaned_description', ''))} chars, density={density}): {v['title'][:50]}...")
+                else:
+                    print(f"  ⟳ [{channel}] needs AI (density={density}): {v['title'][:50]}...")
 
-    print(f"  Tier 0 (title): {extracted['title']} | Tier 1 (desc): {extracted['description']} | Tier 2 (AI): {ai_needed}")
+    print(f"  Tier 0 (title): {extracted['title']} | "
+          f"Tier 1 (desc-direct): {extracted['description']} | "
+          f"Tier 1 (desc-rich→AI): {extracted['description_rich']} | "
+          f"Tier 2 (AI-thin): {ai_needed - extracted['description_rich']}")
 
     # ── Step 3: Synthesize ──
     anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
@@ -668,7 +835,15 @@ def main():
     print("\n" + "=" * 60)
     print("SCAN COMPLETE")
     print(f"  Channels: {len(channels)} | Videos: {total}")
-    print(f"  Summary sources: title={extracted['title']} desc={extracted['description']} ai={ai_needed}")
+    rich = extracted.get("description_rich", 0)
+    thin_ai = ai_needed - rich
+    print(f"  Summary sources: title={extracted['title']} desc-direct={extracted['description']} desc-rich→AI={rich} thin→AI={thin_ai}")
+    if total > 0:
+        pct_free = (extracted['title'] + extracted['description']) / total * 100
+        print(f"  Token-free coverage: {pct_free:.0f}% ({extracted['title'] + extracted['description']}/{total})")
+        if ai_needed > 0:
+            rich_pct = rich / ai_needed * 100 if ai_needed > 0 else 0
+            print(f"  AI-assisted videos: {ai_needed} ({rich} rich/structured, {thin_ai} thin/simple)")
     print(f"  Report: {report_path}")
     print("=" * 60)
 
