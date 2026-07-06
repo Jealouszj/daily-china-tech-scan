@@ -53,6 +53,102 @@ INSTITUTIONS: list[dict[str, str]] = [
     {"name": "Appaloosa LP",            "cik": "0001656456", "slug": "appaloosa"},
 ]
 
+# ── A-Share (A股) institutional data ──────────────────────────
+
+# For each tracked institution: their known A-share / China market presence.
+# This is manually researched data — updated as new information becomes available.
+# Fields:
+#   - a_share_access: how they access A-shares
+#   - known_a_holdings: publicly known A-share positions (from company filings)
+#   - notes: additional context
+#   - data_confidence: 'confirmed' | 'likely' | 'unknown'
+INSTITUTION_A_SHARE_INFO: dict[str, dict] = {
+    "berkshire": {
+        "a_share_access": "None (主要通过港股持有比亚迪 01211.HK，无A股直接持仓)",
+        "known_a_holdings": [],
+        "notes": "巴菲特明确表示不直接投A股。BYD仓位通过港股持有，自2022年8月起持续减持，至2024年持股比例已大幅下降。",
+        "data_confidence": "confirmed",
+    },
+    "bridgewater": {
+        "a_share_access": "QFII + 债券通 (2018年获QFII资格，积极配置A股)",
+        "known_a_holdings": [
+            "公开信息：桥水中国基金通过QFII+RQFII配置A股，偏好消费、医药、科技龙头",
+            "2024年桥水中国基金规模约300亿元人民币，主要投资于A股和债券",
+        ],
+        "notes": "桥水全天候策略在中国落地，A股配置偏大盘蓝筹。具体个股持仓需查上市公司季报前十大股东。",
+        "data_confidence": "confirmed",
+    },
+    "renaissance": {
+        "a_share_access": "Limited (主要通过量化模型，可能通过swap/衍生产品间接参与)",
+        "known_a_holdings": [],
+        "notes": "文艺复兴以量化策略为主，A股参与度较低，13F中几乎不露A股标的。",
+        "data_confidence": "likely",
+    },
+    "goldman": {
+        "a_share_access": "QFII + 合资券商(高盛高华) + 北向",
+        "known_a_holdings": [
+            "高盛通过QFII和北向通道积极参与A股",
+            "2024年高盛多次发布A股看多报告，重点推荐消费和新能源板块",
+        ],
+        "notes": "高盛是中国市场最活跃的外资投行之一，具体持仓分散在多个实体。",
+        "data_confidence": "confirmed",
+    },
+    "morgan-stanley": {
+        "a_share_access": "QFII + 合资券商(摩根士丹利证券) + 北向",
+        "known_a_holdings": [],
+        "notes": "摩根士丹利A股研究覆盖广泛，通过北向通道活跃交易。",
+        "data_confidence": "confirmed",
+    },
+    "ubs": {
+        "a_share_access": "QFII + 北向 (持有最大QFII额度之一)",
+        "known_a_holdings": [
+            "UBS AG在A股多家公司季报中出现在前十大股东",
+            "可通过上市公司季报查询UBS AG持仓",
+        ],
+        "notes": "UBS是QFII额度最大的外资机构之一，在A股市场非常活跃。",
+        "data_confidence": "confirmed",
+    },
+    "blackrock": {
+        "a_share_access": "QFII + 外资全资公募(贝莱德基金) + 北向",
+        "known_a_holdings": [
+            "贝莱德基金2021年获准在华设立全资公募基金公司",
+            "已发行多只A股基金产品，可通过基金季报查询持仓",
+        ],
+        "notes": "贝莱德是全球最大资管公司，积极布局中国A股市场。",
+        "data_confidence": "confirmed",
+    },
+    "point72": {
+        "a_share_access": "Limited (主要通过QFII/北向进行相对低调的配置)",
+        "known_a_holdings": [],
+        "notes": "Point72以多策略对冲基金为主，在A股市场相对低调。",
+        "data_confidence": "likely",
+    },
+    "citadel": {
+        "a_share_access": "QFII (2020年获QFII资格)",
+        "known_a_holdings": [],
+        "notes": "Citadel于2020年获得QFII资格，A股参与度逐步提升。",
+        "data_confidence": "confirmed",
+    },
+    "deshaw": {
+        "a_share_access": "Limited (量化策略为主，主要通过衍生产品/北向)",
+        "known_a_holdings": [],
+        "notes": "D.E. Shaw以量化策略为主，A股参与方式较不透明。",
+        "data_confidence": "likely",
+    },
+    "baupost": {
+        "a_share_access": "None (以美国困境资产/价值投资为主，未见明确A股参与)",
+        "known_a_holdings": [],
+        "notes": "Baupost以深度价值投资为主，主要投资美国市场。",
+        "data_confidence": "likely",
+    },
+    "appaloosa": {
+        "a_share_access": "Limited (David Tepper曾表示看好中国，但主要通过港股/中概股参与)",
+        "known_a_holdings": [],
+        "notes": "Appaloosa关注中国市场，但主要集中在港股和美股中概股。",
+        "data_confidence": "likely",
+    },
+}
+
 # 13F filing schedule
 Q_SCHEDULE = {
     1: {"quarter_end": "03-31", "deadline": "05-15", "label": "Q1"},
@@ -339,6 +435,193 @@ def aggregate_holdings(raw_holdings: list[dict[str, Any]]) -> list[dict[str, Any
 
 
 # ═══════════════════════════════════════════════════════════════
+# A-Share (A股) institutional data fetching
+# ═══════════════════════════════════════════════════════════════
+
+# Custom headers for eastmoney API (required to avoid 403/ proxy issues)
+_EM_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (compatible; daily-china-tech-scan/1.0; research@example.com)",
+    "Referer": "https://data.eastmoney.com/",
+}
+
+_EM_REQUEST_DELAY = 0.3  # Respect eastmoney rate limits
+
+
+def _em_get(url: str, params: dict | None = None, timeout: int = 15) -> dict | None:
+    """GET request to eastmoney API with appropriate headers and rate limiting.
+    Returns parsed JSON dict or None on failure.
+    Explicitly disables proxy — eastmoney APIs reject proxy connections."""
+    import time as _time
+    _time.sleep(_EM_REQUEST_DELAY)
+    try:
+        resp = requests.get(
+            url, params=params, headers=_EM_HEADERS, timeout=timeout,
+            proxies={"http": None, "https": None},  # Disable proxy for eastmoney
+        )
+        if resp.status_code == 200:
+            return resp.json()
+        print(f"    [EM HTTP {resp.status_code}] {url[:80]}...")
+        return None
+    except requests.RequestException as e:
+        print(f"    [EM ERR] {e}")
+        return None
+
+
+def fetch_qfii_sector_stocks(top_n: int = 20) -> dict | None:
+    """Fetch QFII heavy holdings sector constituent stocks from eastmoney.
+    Returns dict with: stocks (list), total_count, fetch_time, source.
+    Data source: 东方财富 QFII重仓板块 (BK0535)
+    NOTE: This is the QFII sector board — stocks that are held by ANY QFII,
+    NOT broken down by individual institution."""
+    url = "https://push2.eastmoney.com/api/qt/clist/get"
+    params = {
+        "pn": "1",
+        "pz": str(top_n),
+        "po": "1",
+        "np": "1",
+        "ut": "bd1d9ddb04089700cf9c27f6f7426281",
+        "fltt": "2",
+        "invt": "2",
+        "fid": "f20",  # sort by total market cap
+        "fs": "b:BK0535",  # QFII重仓板块
+        "fields": "f2,f3,f4,f12,f14,f15,f16,f17,f18,f20,f21",
+    }
+    data = _em_get(url, params)
+    if data is None or not data.get("data"):
+        return None
+
+    diff_data = data["data"]
+    stocks = []
+    for row in diff_data.get("diff", []):
+        try:
+            stocks.append({
+                "code": row.get("f12", ""),
+                "name": row.get("f14", ""),
+                "price": float(row.get("f2", 0) or 0),
+                "change_pct": float(row.get("f3", 0) or 0),
+                "high": float(row.get("f15", 0) or 0),
+                "low": float(row.get("f16", 0) or 0),
+                "volume": int(row.get("f17", 0) or 0),
+                "turnover": float(row.get("f18", 0) or 0),
+                "market_cap": float(row.get("f20", 0) or 0),
+            })
+        except (ValueError, TypeError):
+            continue
+
+    return {
+        "stocks": stocks,
+        "total_count": diff_data.get("total", 0),
+        "fetch_time": datetime.now(timezone.utc).isoformat(),
+        "source": "东方财富 QFII重仓板块 (BK0535)",
+    }
+
+
+def fetch_northbound_flow_summary(days: int = 5) -> dict | None:
+    """Fetch recent northbound capital flow summary.
+    Uses AKShare stock_hsgt_hist_em for both Shanghai and Shenzhen connect.
+    Returns dict with: shanghai_flow, shenzhen_flow, total_flow, recent_days, source.
+    NOTE: Data may be delayed by 1-2 trading days."""
+    try:
+        import akshare as ak
+    except ImportError:
+        print("    [WARN] AKShare not installed — skipping northbound flow data")
+        return None
+
+    try:
+        df_sh = ak.stock_hsgt_hist_em(symbol="沪股通")
+        df_sz = ak.stock_hsgt_hist_em(symbol="深股通")
+    except Exception as e:
+        print(f"    [WARN] Northbound flow fetch failed: {e}")
+        return None
+
+    if df_sh is None or df_sz is None or df_sh.empty or df_sz.empty:
+        return None
+
+    # Get the last N valid (non-NaN) trading days
+    valid_sh = df_sh.dropna(subset=["当日成交净买额"]).tail(days)
+    valid_sz = df_sz.dropna(subset=["当日成交净买额"]).tail(days)
+
+    if valid_sh.empty and valid_sz.empty:
+        return None
+
+    # Align by date
+    recent_days = []
+    for _, row_sh in valid_sh.iterrows():
+        date_str = str(row_sh["日期"])[:10]
+        row_sz = valid_sz[valid_sz["日期"].astype(str).str[:10] == date_str]
+        sz_net = float(row_sz.iloc[0]["当日成交净买额"]) if len(row_sz) > 0 else 0
+        sh_net = float(row_sh["当日成交净买额"])
+        recent_days.append({
+            "date": date_str,
+            "shanghai_net_buy": round(sh_net, 2),
+            "shenzhen_net_buy": round(sz_net, 2),
+            "total_net_buy": round(sh_net + sz_net, 2),
+        })
+
+    if not recent_days:
+        return None
+
+    total_net = sum(d["total_net_buy"] for d in recent_days)
+    sh_total = sum(d["shanghai_net_buy"] for d in recent_days)
+    sz_total = sum(d["shenzhen_net_buy"] for d in recent_days)
+
+    return {
+        "recent_days": recent_days,
+        "shanghai_total_net": round(sh_total, 2),
+        "shenzhen_total_net": round(sz_total, 2),
+        "total_net_flow": round(total_net, 2),
+        "trend": "inflow" if total_net > 0 else "outflow",
+        "fetch_time": datetime.now(timezone.utc).isoformat(),
+        "source": "AKShare / 东方财富 沪深港通数据",
+        "data_lag_note": "数据可能存在1-2个交易日延迟，最新数据为上一交易日",
+    }
+
+
+def fetch_institutional_aggregate_stats() -> dict | None:
+    """Fetch aggregate A-share institutional holding statistics.
+    Uses AKShare stock_institute_hold for overall institutional participation.
+    Returns dict with: total_stocks, avg_inst_count, high_inst_stocks, source."""
+    try:
+        import akshare as ak
+    except ImportError:
+        return None
+
+    try:
+        df = ak.stock_institute_hold()
+    except Exception as e:
+        print(f"    [WARN] Institutional aggregate stats failed: {e}")
+        return None
+
+    if df is None or df.empty:
+        return None
+
+    # Top stocks by institutional count
+    if "机构数" in df.columns:
+        df_sorted = df.sort_values("机构数", ascending=False)
+        top_inst = []
+        for _, row in df_sorted.head(10).iterrows():
+            top_inst.append({
+                "code": str(row.get("证券代码", "")),
+                "name": str(row.get("证券简称", "")),
+                "inst_count": int(row.get("机构数", 0) or 0),
+                "inst_change": int(row.get("机构数变化", 0) or 0),
+                "hold_ratio": float(row.get("持股比例", 0) or 0),
+                "float_ratio": float(row.get("占流通股比例", 0) or 0),
+            })
+
+        return {
+            "total_stocks": len(df),
+            "avg_inst_count": round(float(df["机构数"].mean()), 1) if "机构数" in df.columns else 0,
+            "top_by_inst_count": top_inst,
+            "fetch_time": datetime.now(timezone.utc).isoformat(),
+            "source": "AKShare / 东方财富 机构持股统计",
+            "note": "此数据为全市场机构合计，不区分机构类型（含公募、QFII、保险等）",
+        }
+
+    return None
+
+
+# ═══════════════════════════════════════════════════════════════
 # Cache for change detection
 # ═══════════════════════════════════════════════════════════════
 
@@ -519,6 +802,7 @@ def generate_report(
     changes_by_cik: dict[str, dict],
     schedule: dict[str, Any],
     errors: list[str],
+    a_share_data: dict[str, Any] | None = None,
 ) -> str:
     """Generate the daily markdown report."""
     today_str = datetime.now(timezone.utc).strftime("%Y年%m月%d日")
@@ -616,7 +900,125 @@ def generate_report(
 
             report += "</details>\n\n"
 
-    # ── Section 3: Error log ──────────────────────────────────
+    # ── Section 3: A-Share institutional data ──────────────────
+    if a_share_data:
+        report += "---\n\n## \U0001f1e8\U0001f1f3 A股机构持仓观察\n\n"
+
+        qfii_data = a_share_data.get("qfii_sector")
+        northbound = a_share_data.get("northbound_flow")
+        inst_stats = a_share_data.get("institutional_stats")
+        a_errors = a_share_data.get("errors", [])
+
+        if a_errors:
+            report += "> ⚠️ 部分A股数据获取失败：\n"
+            for e in a_errors:
+                report += f"> - {e}\n"
+            report += "> 以下为可用数据，缺失项已标注。\n\n"
+
+        # ── Sub-section 3a: Institution A-share status ──────────
+        report += "### \U0001f3e6 主要机构A股参与情况\n\n"
+        report += "> 以下为各机构在中国A股市场的已知参与情况。与美股13F不同，"
+        report += "A股没有统一的机构持仓披露数据库，\n"
+        report += "> 机构通过QFII、北向沪深港通、合资公募等多种渠道参与，"
+        report += "具体持仓需查阅上市公司季报前十大股东。\n\n"
+
+        report += "| 机构 | A股参与方式 | 数据确定性 |\n"
+        report += "|------|------------|----------|\n"
+        for inst in INSTITUTIONS:
+            slug = inst["slug"]
+            info = INSTITUTION_A_SHARE_INFO.get(slug, {})
+            access = info.get("a_share_access", "未知")
+            confidence = info.get("data_confidence", "unknown")
+            conf_icon = {"confirmed": "✅ 已确认", "likely": "\U0001f50d 推断", "unknown": "❓ 未知"}.get(confidence, "❓")
+            # Truncate long access descriptions
+            display_access = access[:80] + "..." if len(access) > 80 else access
+            report += f"| **{inst['name']}** | {display_access} | {conf_icon} |\n"
+
+        report += "\n"
+
+        # ── Sub-section 3b: Northbound flow ─────────────────────
+        if northbound:
+            report += "### \U0001f4b0 北向资金近期动向\n\n"
+            trend = northbound.get("trend", "")
+            total = northbound.get("total_net_flow", 0)
+            trend_icon = "\U0001f7e2" if total > 0 else "\U0001f534"
+            report += f"> {trend_icon} 近{len(northbound.get('recent_days', []))}个交易日"
+            report += f"北向资金累计净{'流入' if total > 0 else '流出'} **{abs(total):.1f}亿元**\n"
+            report += f"> 沪股通: {northbound.get('shanghai_total_net', 0):.1f}亿 | "
+            report += f"深股通: {northbound.get('shenzhen_total_net', 0):.1f}亿\n\n"
+
+            recent = northbound.get("recent_days", [])
+            if recent:
+                report += "| 日期 | 沪股通净买额(亿) | 深股通净买额(亿) | 合计(亿) |\n"
+                report += "|------|-----------------|-----------------|--------|\n"
+                for d in recent[-5:]:
+                    dir_icon = "\U0001f7e2" if d["total_net_buy"] > 0 else "\U0001f534"
+                    report += (f"| {d['date']} | {d['shanghai_net_buy']:.1f} "
+                              f"| {d['shenzhen_net_buy']:.1f} | {dir_icon} {d['total_net_buy']:.1f} |\n")
+                report += "\n"
+
+            if northbound.get("data_lag_note"):
+                report += f"> {northbound['data_lag_note']}\n\n"
+        else:
+            report += "### \U0001f4b0 北向资金近期动向\n\n"
+            report += "> ⚠️ 北向资金数据暂不可用（数据源可能延迟或API变更）\n\n"
+
+        # ── Sub-section 3c: QFII sector stocks ──────────────────
+        if qfii_data and qfii_data.get("stocks"):
+            report += "### \U0001f4ca QFII重仓板块 Top 20\n\n"
+            report += f"> 数据来源：{qfii_data.get('source', '东方财富')}\n"
+            report += f"> 注意：此列表为QFII板块成分股（按总市值排序），不区分具体QFII机构名称。\n\n"
+            report += "| # | 代码 | 名称 | 最新价 | 涨跌幅 | 总市值(亿) |\n"
+            report += "|---|------|------|--------|--------|----------|\n"
+            for i, s in enumerate(qfii_data["stocks"][:20], 1):
+                mcap = s.get("market_cap", 0) / 1e8 if s.get("market_cap") else 0
+                chg = s.get("change_pct", 0)
+                chg_str = f"\U0001f7e2 +{chg:.2f}%" if chg > 0 else f"\U0001f534 {chg:.2f}%"
+                report += (f"| {i} | {s['code']} | **{s['name']}** | {s['price']:.2f} "
+                          f"| {chg_str} | {mcap:.1f} |\n")
+            report += "\n"
+        else:
+            report += "### \U0001f4ca QFII重仓板块\n\n"
+            report += "> ⚠️ QFII板块数据暂不可用（数据源可能延迟或API变更）\n\n"
+
+        # ── Sub-section 3d: Institutional aggregate stats ───────
+        if inst_stats:
+            report += "### \U0001f4ca 全市场机构持股统计\n\n"
+            report += f"> {inst_stats.get('source', '')}\n"
+            report += f"> {inst_stats.get('note', '')}\n\n"
+            report += f"- **覆盖A股数量**：{inst_stats['total_stocks']} 只\n"
+            report += f"- **平均机构持股数**：{inst_stats['avg_inst_count']} 家/只\n\n"
+
+            top = inst_stats.get("top_by_inst_count", [])
+            if top:
+                report += "**机构持股数量最多的股票：**\n\n"
+                report += "| # | 代码 | 名称 | 持股机构数 | 机构数变化 | 持股比例 |\n"
+                report += "|---|------|------|----------|----------|--------|\n"
+                for i, s in enumerate(top[:10], 1):
+                    chg = s.get("inst_change", 0)
+                    chg_str = f"+{chg}" if chg > 0 else str(chg)
+                    report += (f"| {i} | {s['code']} | **{s['name']}** "
+                              f"| {s['inst_count']} | {chg_str} | {s['hold_ratio']:.1f}% |\n")
+                report += "\n"
+
+        # ── Institution-specific known holdings ─────────────────
+        report += "<details>\n<summary>\U0001f4cb 各机构A股参与详情</summary>\n\n"
+        for inst in INSTITUTIONS:
+            slug = inst["slug"]
+            info = INSTITUTION_A_SHARE_INFO.get(slug, {})
+            report += f"**{inst['name']}**\n"
+            report += f"- 参与方式：{info.get('a_share_access', '未知')}\n"
+            known = info.get("known_a_holdings", [])
+            if known:
+                for h in known:
+                    report += f"- {h}\n"
+            notes = info.get("notes", "")
+            if notes:
+                report += f"- {notes}\n"
+            report += "\n"
+        report += "</details>\n\n"
+
+    # ── Section 4: Error log ──────────────────────────────────
     if errors:
         report += "---\n\n## ⚠️ 数据获取问题\n\n"
         for e in errors:
@@ -780,6 +1182,64 @@ def main():
             "holdings": aggregated[:50],
         }
 
+    # ── Fetch A-share data ──
+    print("\n── A-Share Institutional Data ──")
+    a_share_data: dict[str, Any] = {}
+    a_share_errors: list[str] = []
+
+    # Disable proxy for eastmoney API calls (handle both lower/upper case variants)
+    _orig_proxy_vars = {}
+    for _key in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
+        _val = os.environ.pop(_key, None)
+        if _val is not None:
+            _orig_proxy_vars[_key] = _val
+
+    try:
+        print("  Fetching QFII sector stocks... ", end="", flush=True)
+        qfii_data = fetch_qfii_sector_stocks(top_n=20)
+        if qfii_data:
+            print(f"{len(qfii_data['stocks'])} stocks (total {qfii_data['total_count']})")
+            a_share_data["qfii_sector"] = qfii_data
+        else:
+            print("unavailable")
+            a_share_errors.append("QFII板块数据获取失败（东方财富API可能变更）")
+    except Exception as e:
+        print(f"error: {e}")
+        a_share_errors.append(f"QFII板块数据获取异常: {e}")
+
+    try:
+        print("  Fetching northbound flow... ", end="", flush=True)
+        northbound = fetch_northbound_flow_summary(days=5)
+        if northbound and northbound.get("recent_days"):
+            total = northbound["total_net_flow"]
+            print(f"{len(northbound['recent_days'])} days, net {total:+.1f}亿")
+            a_share_data["northbound_flow"] = northbound
+        else:
+            print("unavailable")
+            a_share_errors.append("北向资金数据获取失败（AKShare数据源可能延迟）")
+    except Exception as e:
+        print(f"error: {e}")
+        a_share_errors.append(f"北向资金数据异常: {e}")
+
+    try:
+        print("  Fetching institutional aggregate stats... ", end="", flush=True)
+        inst_stats = fetch_institutional_aggregate_stats()
+        if inst_stats:
+            print(f"{inst_stats['total_stocks']} stocks, avg {inst_stats['avg_inst_count']} insts/stock")
+            a_share_data["institutional_stats"] = inst_stats
+        else:
+            print("unavailable")
+            a_share_errors.append("机构持股统计数据获取失败")
+    except Exception as e:
+        print(f"error: {e}")
+        a_share_errors.append(f"机构持股统计异常: {e}")
+
+    a_share_data["errors"] = a_share_errors
+
+    # Restore proxy settings
+    for _key, _val in _orig_proxy_vars.items():
+        os.environ[_key] = _val
+
     # ── Generate report ──
     if success_count == 0:
         print("\n[ERROR] All institutions failed — generating placeholder report")
@@ -794,9 +1254,20 @@ def main():
 
 > 13F数据来自 SEC EDGAR，仅供参考，不构成投资建议。
 """
+        # Even on failure, include A-share data if available
+        if a_share_data.get("qfii_sector") or a_share_data.get("northbound_flow"):
+            report += "\n---\n\n## 🇨🇳 A股机构持仓观察\n\n"
+            report += "> ⚠️ 美股13F数据获取失败，但以下A股数据可用：\n\n"
+            # Add simplified A-share section
+            if a_share_data.get("northbound_flow"):
+                nb = a_share_data["northbound_flow"]
+                total = nb["total_net_flow"]
+                report += f"- 北向资金近期累计净{'流入' if total > 0 else '流出'} {abs(total):.1f}亿元\n"
+            if a_share_data.get("qfii_sector") and a_share_data["qfii_sector"].get("stocks"):
+                report += f"- QFII重仓板块共 {a_share_data['qfii_sector']['total_count']} 只标的\n"
     else:
         schedule = get_filing_schedule_info()
-        report = generate_report(all_data, changes_by_cik, schedule, errors)
+        report = generate_report(all_data, changes_by_cik, schedule, errors, a_share_data)
 
     # ── Save ──
     report_path = save_report(report, output_dir)
