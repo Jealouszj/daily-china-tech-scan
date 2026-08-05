@@ -529,6 +529,8 @@ def ai_summarize_video(ai_input: str, client, model: str,
         for block in response.content:
             if hasattr(block, 'text') and block.text:
                 text_parts.append(block.text)
+            elif hasattr(block, 'thinking') and block.thinking:
+                text_parts.append(block.thinking)
         if not text_parts:
             btypes = [getattr(b, 'type', type(b).__name__) for b in response.content]
             print(f"    [WARN] No text in response blocks: {btypes}")
@@ -649,6 +651,8 @@ Produce the daily report now."""
         for block in response.content:
             if hasattr(block, 'text') and block.text:
                 text_parts.append(block.text)
+            elif hasattr(block, 'thinking') and block.thinking:
+                text_parts.append(block.thinking)
         if not text_parts:
             btypes = [getattr(b, 'type', type(b).__name__) for b in response.content]
             print(f"    [WARN] No text in daily report response blocks: {btypes}")

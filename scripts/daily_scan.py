@@ -250,15 +250,21 @@ would NOT cover, or cover very differently. Be specific with numbers and sources
             system=SYNTHESIS_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": prompt}],
         )
-        # Extract text from content blocks (skip ThinkingBlock — thinking is internal reasoning, not output)
+        # Extract text from content blocks
+        # Anthropic native: text blocks with .text
+        # DeepSeek-compatible: may return thinking blocks with .thinking
         text_parts = []
         for block in response.content:
             if hasattr(block, 'text') and block.text:
                 text_parts.append(block.text)
+            elif hasattr(block, 'thinking') and block.thinking:
+                # DeepSeek API returns thinking blocks instead of text blocks
+                text_parts.append(block.thinking)
         if not text_parts:
             btypes = [getattr(b, 'type', type(b).__name__) for b in response.content]
             print(f"[WARN] No text in synthesis response blocks: {btypes}")
-            return "(AI 响应为空，可能为 DeepSeek thinking 模式异常)"
+            print(f"[DEBUG] Response stop_reason={getattr(response, 'stop_reason', 'N/A')}")
+            return None  # Signal caller to fall back to lightweight mode
         return "\n".join(text_parts)
     except Exception as e:
         print(f"[ERROR] API call failed: {e}")
@@ -431,6 +437,12 @@ def main():
         synthesis = synthesize_with_claude(search_text, anthropic_key,
                                             base_url=anthropic_base_url,
                                             model=anthropic_model)
+        if synthesis is None:
+            # AI returned empty — fall back to lightweight mode
+            print("[WARN] AI synthesis returned empty, falling back to lightweight mode")
+            use_ai = False
+
+    if use_ai:
         report = f"""# 🌍 {title}
 
 > 🤖 由 GitHub Actions + Anthropic API 自动生成 | {today_cn} 21:03 北京时间
