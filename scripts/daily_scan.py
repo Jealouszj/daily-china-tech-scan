@@ -57,40 +57,51 @@ SEARCH_ROUNDS = [
     },
 ]
 
-SYNTHESIS_SYSTEM_PROMPT = """You are a senior financial and technology research analyst specializing in
-cross-referencing Chinese and Western media coverage.
+SYNTHESIS_SYSTEM_PROMPT = """You are a senior financial analyst producing a PRE-MARKET BRIEFING for a China-focused tech investor who has 3-5 minutes before market open.
 
 ## Your Task
-Given raw search results from multiple rounds of English-language web searches about Chinese
-technology and financial news, produce a comprehensive markdown report.
+From raw English-language search results about Chinese technology and finance, produce a CONCISE Chinese markdown report. The reader needs to grasp the morning's key signals FAST.
 
-## Report Structure (follow exactly):
+## CRITICAL RULES — read before writing a single word
 
-### Section 1: Explosive / Underreported Stories
-Ranked by significance. For each story include:
-- **Source**: Which foreign media outlet (Bloomberg, Reuters, SCMP, etc.)
-- **Domestic Coverage Level**: one of: 几乎不报 / 极低 / 有些但轻描淡写
-- **Key Facts**: 3-5 bullet points with specific data and numbers
-- **Why Underreported**: 1-2 sentences analyzing the reason
+### Brevity (non-negotiable)
+- Total output MUST stay under 2000 Chinese characters (≈600 words). If you exceed this, the report is useless for pre-market reading.
+- Every sentence must carry information weight. Cut adjectives, cut background, cut "analyst color".
+- Numbers over narrative: "跌14%" beats "出现显著下跌".
 
-### Section 2: Notable But Less Explosive
-Same format, shorter entries.
+### NO internal monologue
+- Do NOT include your reasoning, thinking process, analysis steps, or commentary ABOUT the report.
+- Output ONLY the finished report sections below. Nothing before, nothing after.
+- If you find yourself writing "Need to..." or "Let me..." or "I think..." or "根据..." reasoning — STOP. Those don't belong in the output.
 
-### Section 3: Summary Table
-| Topic | Domestic Coverage | Significance | Source |
+### Scannable structure
+- The reader skims in 60 seconds, then deep-dives only what matters.
+- Use the exact section structure below. Don't add sections or merge them.
 
-### Section 4: Analyst Commentary
-2-3 paragraphs on cross-cutting themes and what to watch next.
+## Report Structure (follow exactly)
 
-## Critical Rules
-1. Prioritize stories with specific numbers, dates, and named sources
-2. Cross-reference: if multiple foreign outlets report the same thing, flag it as more credible
-3. Clearly separate confirmed facts from analyst opinions
-4. Filter out Chinese state media (Xinhua, CGTN, China Daily, Global Times, ECNS, People's Daily, CRI) — these are domestic sources, not foreign
-5. Include URLs for key articles
-6. Date the report with today's date
-7. Write in Chinese (the user is Chinese-speaking) but preserve key English terms and company names
-8. Add a disclaimer: "以上信息整理自公开外媒报道，不代表本人观点，仅供参考。"
+### 🔥 今日必读
+Top 3-5 most impactful stories ranked by significance. For each story:
+- **Headline** — Source
+  - Key facts (2-3 bullets with specific numbers, dates, company names)
+  - 国内报道: 几乎不报 / 极低 / 有些但轻描淡写
+  - 关注理由: one sentence on why this matters for China tech positioning
+
+### 📰 快速扫描
+Remaining notable stories. Each is ONE compact line:
+- **Headline** — Source | 国内: xxx | One-sentence takeaway with key number if any
+
+### 📊 盘前看点
+2-3 sentences total. What is the ONE cross-cutting theme or tension a China tech investor should watch today? No fluff.
+
+## Filtering & Quality Rules
+1. Exclude Chinese state media (Xinhua, CGTN, China Daily, Global Times, ECNS, People's Daily, CRI)
+2. Focus on stories domestic media would NOT cover, or cover very differently
+3. Cross-reference: multiple foreign outlets on same story = higher credibility → rank it higher
+4. Include source URLs for stories in 今日必读 section
+5. Write in Chinese, preserve English names/tickers
+6. End with disclaimer line: "> 以上信息整理自公开外媒报道，不代表本人观点，仅供参考。"
+7. Include today's date in the report header
 """
 
 
@@ -246,23 +257,25 @@ would NOT cover, or cover very differently. Be specific with numbers and sources
     try:
         response = client.messages.create(
             model=model,
-            max_tokens=8000,
+            max_tokens=4000,
             system=SYNTHESIS_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": prompt}],
         )
-        # Extract text from content blocks
-        # Anthropic native: text blocks with .text
-        # DeepSeek-compatible: may return thinking blocks with .thinking
+        # Extract text from content blocks ONLY.
+        # CRITICAL: never include thinking blocks in report output —
+        # they contain internal reasoning, not finished content.
         text_parts = []
+        has_thinking_only = False
         for block in response.content:
             if hasattr(block, 'text') and block.text:
                 text_parts.append(block.text)
             elif hasattr(block, 'thinking') and block.thinking:
-                # DeepSeek API returns thinking blocks instead of text blocks
-                text_parts.append(block.thinking)
+                has_thinking_only = True
         if not text_parts:
             btypes = [getattr(b, 'type', type(b).__name__) for b in response.content]
-            print(f"[WARN] No text in synthesis response blocks: {btypes}")
+            print(f"[WARN] No text blocks in synthesis response: {btypes}")
+            if has_thinking_only:
+                print("[WARN] Got thinking blocks but no text — model may have output reasoning only; falling back to lightweight mode")
             print(f"[DEBUG] Response stop_reason={getattr(response, 'stop_reason', 'N/A')}")
             return None  # Signal caller to fall back to lightweight mode
         return "\n".join(text_parts)
@@ -459,9 +472,9 @@ def main():
     youtube_report_path = Path("output/youtube-report.md")
     if youtube_report_path.exists():
         youtube_content = youtube_report_path.read_text(encoding="utf-8")
-        # Strip the top-level heading from YouTube report (already has ##)
+        # Strip the top-level heading from YouTube report
         youtube_content = re.sub(r'^# 📺.*\n', '', youtube_content)
-        report += f"\n\n---\n\n{youtube_content.strip()}\n"
+        report += f"\n\n---\n\n## 📺 订阅频道更新\n\n{youtube_content.strip()}\n"
         print("[INFO] Merged YouTube report into daily report")
 
     # --- Merge Holdings report if available ---
@@ -470,7 +483,7 @@ def main():
         holdings_content = holdings_report_path.read_text(encoding="utf-8")
         # Strip the top-level heading from holdings report
         holdings_content = re.sub(r'^# 📊.*\n', '', holdings_content)
-        report += f"\n\n---\n\n{holdings_content.strip()}\n"
+        report += f"\n\n---\n\n## 📊 机构13F持仓\n\n{holdings_content.strip()}\n"
         print("[INFO] Merged holdings report into daily report")
 
     # --- Output ---

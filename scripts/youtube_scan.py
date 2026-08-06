@@ -526,14 +526,17 @@ def ai_summarize_video(ai_input: str, client, model: str,
             messages=[{"role": "user", "content": ai_input}],
         )
         text_parts = []
+        has_thinking_only = False
         for block in response.content:
             if hasattr(block, 'text') and block.text:
                 text_parts.append(block.text)
             elif hasattr(block, 'thinking') and block.thinking:
-                text_parts.append(block.thinking)
+                has_thinking_only = True
         if not text_parts:
             btypes = [getattr(b, 'type', type(b).__name__) for b in response.content]
-            print(f"    [WARN] No text in response blocks: {btypes}")
+            print(f"    [WARN] No text blocks in response: {btypes}")
+            if has_thinking_only:
+                print("    [WARN] Got thinking blocks but no text — model may have output reasoning only")
             return "(AI 摘要失败)"
         summary = "".join(text_parts).strip()
         # Soft truncation — only if wildly over target
@@ -556,7 +559,7 @@ def ai_summarize_video(ai_input: str, client, model: str,
 # AI: Daily report synthesis (cross-channel formatting)
 # ═══════════════════════════════════════════════════════════════
 
-DAILY_REPORT_PROMPT = """You format a daily YouTube subscription digest in Chinese.
+DAILY_REPORT_PROMPT = """You format a daily YouTube subscription digest in Chinese for pre-market reading.
 
 ## Input
 You'll receive a list of videos with pre-extracted summaries (from titles, descriptions, or AI).
@@ -565,13 +568,15 @@ Your job is to FORMAT and PRIORITIZE, not to re-summarize.
 ## Output Format
 
 ### 🔥 今日必看
-1-2 most important videos. For each: title (as markdown link), channel, duration, and why it matters.
+ONLY 1-2 videos that genuinely matter for investment decisions. Not "most popular" — most actionable.
+For each: title (as markdown link), channel, duration, and one sentence on why it matters.
 
 ### 📺 其他更新
 Remaining videos in a compact list:
 - **[title](url)**（channel | duration）— use the extracted summary directly.
-  Keep summaries as provided; only trim if they exceed 350 characters.
+  Keep summaries as provided; only trim if they exceed 300 characters.
   Preserve: stock codes, position recommendations, price targets, % data.
+  For videos with no substantive content, just show title + channel — no filler text.
 
 ### 📊 今日概览
 - X channels, Y videos total
@@ -581,10 +586,11 @@ Remaining videos in a compact list:
 ## Rules
 1. **Preserve the extracted summaries** — don't re-compress them; they're already tailored to input richness
 2. Format URLs as markdown links: `[title](url)`
-3. Opinionated prioritization: genuine insights > news roundups > sponsored/fluff
+3. Opinionated prioritization: genuine investment insights > market news > sponsored/fluff
 4. If a video's summary is its own title, format it cleanly without repeating
-5. Add at end: "以上摘要由 AI 自动整理，视频核心观点来自标题/简介提取，以实际观看为准。"
-6. Total output: max 3000 chars
+5. At end: "> 以上摘要由 AI 自动整理，视频核心观点来自标题/简介提取，以实际观看为准。"
+6. Total output: max 2500 chars
+7. NEVER include reasoning, thinking process, or commentary ABOUT the report. Output ONLY the formatted digest.
 """
 
 
@@ -648,14 +654,17 @@ Produce the daily report now."""
             messages=[{"role": "user", "content": prompt}],
         )
         text_parts = []
+        has_thinking_only = False
         for block in response.content:
             if hasattr(block, 'text') and block.text:
                 text_parts.append(block.text)
             elif hasattr(block, 'thinking') and block.thinking:
-                text_parts.append(block.thinking)
+                has_thinking_only = True
         if not text_parts:
             btypes = [getattr(b, 'type', type(b).__name__) for b in response.content]
-            print(f"    [WARN] No text in daily report response blocks: {btypes}")
+            print(f"    [WARN] No text blocks in daily report response: {btypes}")
+            if has_thinking_only:
+                print("    [WARN] Got thinking blocks but no text — model may have output reasoning only")
             return format_lightweight_report(videos_by_channel)
         report = "\n".join(text_parts)
 
