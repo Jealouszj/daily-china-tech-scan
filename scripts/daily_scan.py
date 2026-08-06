@@ -261,17 +261,25 @@ would NOT cover, or cover very differently. Be specific with numbers and sources
         # CRITICAL: never include thinking blocks in report output —
         # they contain internal reasoning, not finished content.
         text_parts = []
-        has_thinking_only = False
+        thinking_parts = []
         for block in response.content:
             if hasattr(block, 'text') and block.text:
                 text_parts.append(block.text)
             elif hasattr(block, 'thinking') and block.thinking:
-                has_thinking_only = True
+                thinking_parts.append(block.thinking)
         if not text_parts:
+            if thinking_parts:
+                # DeepSeek reasoning models sometimes return ONLY thinking blocks.
+                # Extract thinking content as fallback — better than lightweight mode.
+                print("[WARN] No text blocks — falling back to thinking block content")
+                thinking_text = "\n".join(thinking_parts)
+                # Thinking blocks often contain verbose reasoning; take the last ~4000 chars
+                # which typically contains the final synthesized output.
+                if len(thinking_text) > 4000:
+                    thinking_text = "…(reasoning truncated)…\n\n" + thinking_text[-4000:]
+                return thinking_text
             btypes = [getattr(b, 'type', type(b).__name__) for b in response.content]
-            print(f"[WARN] No text blocks in synthesis response: {btypes}")
-            if has_thinking_only:
-                print("[WARN] Got thinking blocks but no text — model may have output reasoning only; falling back to lightweight mode")
+            print(f"[WARN] No text or thinking blocks in synthesis response: {btypes}")
             print(f"[DEBUG] Response stop_reason={getattr(response, 'stop_reason', 'N/A')}")
             return None  # Signal caller to fall back to lightweight mode
         return "\n".join(text_parts)
@@ -400,6 +408,9 @@ def main():
 
     anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
     anthropic_base_url = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
+    # NOTE: For DeepSeek, use "deepseek-v4-flash" (non-reasoning mode).
+    # The old "deepseek-chat" alias was deprecated 2026-07-24.
+    # Reasoning models return thinking blocks that may lack text blocks entirely.
     anthropic_model = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6")
     github_token = os.environ.get("GITHUB_TOKEN", "")
     newsapi_key = os.environ.get("NEWSAPI_KEY", "")

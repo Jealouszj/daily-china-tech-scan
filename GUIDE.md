@@ -65,13 +65,36 @@ daily-china-tech-scan/
 |--------|------|
 | `GITHUB_TOKEN` | Actions 自动注入，用于创建 Issue |
 
-###  推荐：Anthropic API Key（开启深度模式）
+###  推荐：AI API Key（开启深度模式）
 
-| Secret | 获取方式 |
-|--------|---------|
-| `ANTHROPIC_API_KEY` | https://console.anthropic.com → API Keys → Create Key |
+支持 **Anthropic 官方 API** 和 **DeepSeek 兼容 API**（以及其他 Anthropic-compatible 服务）。
 
-有了这个 Key，报告由 Claude Sonnet 进行智能分析：
+#### 方式 A：Anthropic 官方（推荐）
+
+| Secret | 值 |
+|--------|---|
+| `ANTHROPIC_API_KEY` | `sk-ant-api03-...` |
+| `ANTHROPIC_BASE_URL` | （留空，默认 `https://api.anthropic.com`） |
+| `ANTHROPIC_MODEL` | （留空，默认 `claude-sonnet-4-6`） |
+
+#### 方式 B：DeepSeek API
+
+| Secret | 值 |
+|--------|---|
+| `ANTHROPIC_API_KEY` | 你的 DeepSeek API Key |
+| `ANTHROPIC_BASE_URL` | `https://api.deepseek.com` |
+| `ANTHROPIC_MODEL` | `deepseek-v4-flash` ⚠️ 见下方说明 |
+
+> ⚠️ **重要：使用 `deepseek-v4-flash`（非推理模式），不要用旧模型名。**
+>
+> - ~~`deepseek-chat`~~ 已于 2026-07-24 退役，是 V3.2 的旧别名
+> - ~~`deepseek-reasoner`~~ 同样退役；旧推理模型返回 thinking block 而非 text block，
+>   导致系统认为 AI 无有效输出而回退轻量模式，白白消耗 token
+> - **请使用 `deepseek-v4-flash`** — V4 统一了推理/非推理模式，
+>   默认输出 text block，速度快、便宜（$0.14/M 输入, $0.28/M 输出）、摘要质量够用
+> - 如果需要更强推理能力，可升级到 `deepseek-v4-pro`（$0.435/$0.87，约 3x 价格）
+
+有了 AI Key，报告进行智能分析：
 - 自动识别国内报道不足的内容
 - 对比国内外叙事差异
 - 信源可信度判断 + 去重

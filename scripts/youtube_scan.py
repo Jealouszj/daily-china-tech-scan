@@ -216,6 +216,80 @@ def fetch_all_channels(channels: list[tuple[str, str]]) -> dict[str, list[dict]]
 
 
 # ═══════════════════════════════════════════════════════════════
+# Transcript fetching (free, no API key)
+# ═══════════════════════════════════════════════════════════════
+
+def fetch_video_transcript(video_id: str,
+                           prefer_langs: list[str] | None = None) -> str | None:
+    """Fetch YouTube captions/subtitles via youtube-transcript-api (v1.x).
+    Free, no API key required. Returns concatenated transcript text or None."""
+    if not video_id:
+        return None
+    if prefer_langs is None:
+        # Prefer Chinese first (for China-tech focus), then English
+        prefer_langs = ['zh-Hans', 'zh-Hant', 'zh', 'en']
+    try:
+        from youtube_transcript_api import YouTubeTranscriptApi
+        api = YouTubeTranscriptApi()
+        # fetch() handles language fallback automatically
+        transcript = api.fetch(video_id, languages=prefer_langs)
+        # Concatenate with timestamps for context
+        lines = []
+        for seg in transcript:
+            text = seg.text.strip()
+            if not text:
+                continue
+            # Skip obvious non-content lines (music cues, applause, etc.)
+            if text.startswith('[') and text.endswith(']'):
+                continue
+            if text.lower() in ('[music]', '[applause]', '[laughter]', '[♪♪♪]'):
+                continue
+            minutes = int(seg.start // 60)
+            seconds = int(seg.start % 60)
+            lines.append(f"[{minutes}:{seconds:02d}] {text}")
+        if not lines:
+            return None
+        return '\n'.join(lines)
+    except Exception:
+        # Transcript API errors are common (no captions, rate limits, etc.)
+        # Don't spam — this is an enhancement, not a requirement.
+        return None
+
+
+def extract_transcript_excerpt(transcript: str, max_chars: int = 2000) -> str:
+    """Extract the most informative portions of a transcript for AI input.
+    Strategy: first ~30% (intro/thesis) + last ~20% (conclusions/calls-to-action)
+    since financial videos front-load key points and end with recommendations."""
+    if len(transcript) <= max_chars:
+        return transcript
+
+    # Split into lines, preserve timestamped structure
+    lines = transcript.split('\n')
+    total_lines = len(lines)
+
+    # First 35% — typically contains the thesis, key data points, setup
+    intro_end = max(1, int(total_lines * 0.35))
+    intro_lines = lines[:intro_end]
+    intro_text = '\n'.join(intro_lines)
+
+    # Last 25% — typically contains conclusions, recommendations, positions
+    outro_start = int(total_lines * 0.75)
+    outro_lines = lines[outro_start:]
+    outro_text = '\n'.join(outro_lines)
+
+    # Allocate budget: 55% to intro, 35% to outro, 10% for separator
+    intro_budget = int(max_chars * 0.55)
+    outro_budget = int(max_chars * 0.35)
+
+    if len(intro_text) > intro_budget:
+        intro_text = intro_text[:intro_budget] + "\n…(中间部分省略)…"
+    if len(outro_text) > outro_budget:
+        outro_text = "…(中间部分省略)…\n" + outro_text[-outro_budget:]
+
+    return f"{intro_text}\n\n…(中间部分省略)…\n\n{outro_text}"
+
+
+# ═══════════════════════════════════════════════════════════════
 # Multi-Tier Content Extraction (TOKEN-FREE)
 # ═══════════════════════════════════════════════════════════════
 
@@ -423,18 +497,30 @@ def extract_content(video: dict) -> dict:
 
     if is_rich:
         # Rich description (> 300 chars) — needs AI for ~300 char structured summary
-        # Provide full description so AI has all context
-        ai_input = (
-            f"标题：{title}\n"
-            f"时长：{video.get('duration', '?')}\n"
-            f"简介（{eff_len}字，信息密度{density}分，内容详尽，请保留关键数据）：\n"
-            f"{cleaned_desc}\n"
-        )
+        # Try transcript first for even better context
+        video_id = video.get("video_id", "")
+        transcript_text = fetch_video_transcript(video_id) if video_id else None
+        if transcript_text:
+            transcript_excerpt = extract_transcript_excerpt(transcript_text)
+            ai_input = (
+                f"标题：{title}\n"
+                f"时长：{video.get('duration', '?')}\n"
+                f"简介（{eff_len}字，信息密度{density}分）：\n{cleaned_desc}\n"
+                f"视频字幕摘要（开头+结尾）：\n{transcript_excerpt}\n"
+            )
+        else:
+            ai_input = (
+                f"标题：{title}\n"
+                f"时长：{video.get('duration', '?')}\n"
+                f"简介（{eff_len}字，信息密度{density}分，内容详尽，请保留关键数据）：\n"
+                f"{cleaned_desc}\n"
+            )
         result["extracted_summary"] = ""
         result["summary_source"] = None
         result["needs_ai"] = True
-        result["ai_input"] = ai_input[:2000]  # Allow up to 2000 chars for rich descriptions
-        result["effective_desc_len"] = eff_len  # Pass through for adaptive token budget
+        result["ai_input"] = ai_input[:2500]  # Allow more for transcript-enriched input
+        result["effective_desc_len"] = eff_len
+        result["has_transcript"] = bool(transcript_text)
         return result
 
     # ── Tier 0: Title self-summarizing? ──
@@ -446,16 +532,28 @@ def extract_content(video: dict) -> dict:
         result["ai_input"] = ""
         return result
 
-    # ── Tier 2: Need AI help ──
+    # ── Tier 2: Need AI help — enrich with transcript if available ──
+    video_id = video.get("video_id", "")
+    transcript_text = fetch_video_transcript(video_id) if video_id else None
+
     ai_input = f"标题：{title}\n时长：{video.get('duration', '?')}\n"
     if cleaned_desc:
         ai_input += f"简介（{eff_len}字，信息密度{density}分）：\n{cleaned_desc}\n"
     else:
-        ai_input += "（无简介，仅根据标题判断内容）\n"
+        ai_input += "（无简介）\n"
+
+    if transcript_text:
+        transcript_excerpt = extract_transcript_excerpt(transcript_text)
+        ai_input += f"\n视频字幕（开头+结尾，含时间戳）：\n{transcript_excerpt}\n"
+        result["has_transcript"] = True
+    else:
+        ai_input += "（无字幕，仅根据标题判断内容）\n"
+        result["has_transcript"] = False
+
     result["extracted_summary"] = ""
     result["summary_source"] = None
     result["needs_ai"] = True
-    result["ai_input"] = ai_input[:1500]
+    result["ai_input"] = ai_input[:2500]
     return result
 
 
@@ -466,14 +564,23 @@ def extract_content(video: dict) -> dict:
 VIDEO_SUMMARY_PROMPT = """You summarize financial/trading YouTube videos in Chinese.
 Your goal: preserve enough detail to be useful, but stay concise enough to scan quickly.
 
+## Input sources (in priority order)
+1. **视频字幕（开头+结尾）** — MOST IMPORTANT when available. Contains the actual spoken content.
+   The transcript uses [M:SS] timestamps. Focus on data, recommendations, and specific claims.
+2. **简介** — Written description, may contain structured data, links, or key points.
+3. **标题** — Use as context; English clickbait titles often lack substance — don't just translate them.
+
 ## Length rules (ADAPTIVE)
-- If input has RICH description (>300 chars with stock picks, positions, forecasts):
-  → Summarize to **200-350 Chinese characters**. Preserve: tickers/stock codes, price ranges,
-    position recommendations (增持/减持/持有), bullish/bearish views, short/medium/long-term
-    outlooks, key support/resistance levels, specific % targets.
-- If input has MEDIUM description (100-300 chars with some data):
+- If input has TRANSCRIPT + rich description:
+  → Summarize to **250-400 Chinese characters**. The transcript contains the real content — extract it.
+    Preserve: tickers/stock codes, price ranges, position recommendations (增持/减持/持有),
+    bullish/bearish views, short/medium/long-term outlooks, key support/resistance levels,
+    specific % targets, time horizons.
+- If input has RICH description only (>300 chars with stock picks, positions, forecasts):
+  → Summarize to **200-350 Chinese characters**. Same preservation rules as above.
+- If input has MEDIUM description or transcript (100-300 chars with some data):
   → Summarize to **120-200 Chinese characters**. Extract the core thesis with key numbers.
-- If input has THIN description (title only or vague text):
+- If input has THIN content (title only or vague text, no transcript):
   → Summarize to **60-120 Chinese characters**. Extract the single most important takeaway.
 
 ## What to KEEP (high priority)
@@ -489,6 +596,7 @@ Your goal: preserve enough detail to be useful, but stay concise enough to scan 
 2. Generic market commentary without specifics
 3. Repetitive phrases, filler words
 4. Personal anecdotes not related to investment decisions
+5. Timestamps [M:SS] — these are for your reference, don't include them in output
 
 ## Output format
 Just the summary text. No prefix like "这个视频讲了..." or "总结：".
@@ -499,15 +607,22 @@ If input contains NO substantive financial information (just promo/ads/vague tal
 def ai_summarize_video(ai_input: str, client, model: str,
                        desc_is_rich: bool = False,
                        info_density: int = 0,
-                       effective_desc_len: int = 0) -> str:
+                       effective_desc_len: int = 0,
+                       has_transcript: bool = False) -> str:
     """Call AI to summarize a single video with adaptive output length.
+    - Transcript + rich desc → max_tokens=1200, ~350 char summary (most detail)
     - Truly rich (>300 chars) → max_tokens=1000, ~300 char summary
+    - Transcript + thin desc → max_tokens=800, ~250 char summary
     - Medium-with-substance (100-300 chars) → max_tokens=500, ~150 char summary
     - Thin (<100 chars or density 0) → max_tokens=300, ~80 char summary
     """
-    # Adaptive token budget: prioritize truly rich over medium-with-substance
-    if desc_is_rich and effective_desc_len > _RICH_DESC_THRESHOLD:
+    # Adaptive token budget: transcript > rich desc > medium > thin
+    if has_transcript and (desc_is_rich or info_density >= 3):
+        max_tokens = 1200
+    elif desc_is_rich and effective_desc_len > _RICH_DESC_THRESHOLD:
         max_tokens = 1000
+    elif has_transcript:
+        max_tokens = 800
     elif desc_is_rich:  # Medium with substance (100-300 chars, density 1-2)
         max_tokens = 500
     elif info_density >= 3:
@@ -526,17 +641,24 @@ def ai_summarize_video(ai_input: str, client, model: str,
             messages=[{"role": "user", "content": ai_input}],
         )
         text_parts = []
-        has_thinking_only = False
+        thinking_parts = []
         for block in response.content:
             if hasattr(block, 'text') and block.text:
                 text_parts.append(block.text)
             elif hasattr(block, 'thinking') and block.thinking:
-                has_thinking_only = True
+                thinking_parts.append(block.thinking)
         if not text_parts:
+            if thinking_parts:
+                # DeepSeek reasoning models sometimes return ONLY thinking blocks.
+                # Extract thinking content as fallback for individual video summary.
+                print("    [WARN] No text blocks — using thinking block content as fallback")
+                summary = "\n".join(thinking_parts).strip()
+                # Thinking blocks can be verbose; take last ~800 chars for video summary
+                if len(summary) > 800:
+                    summary = "…" + summary[-800:]
+                return summary
             btypes = [getattr(b, 'type', type(b).__name__) for b in response.content]
             print(f"    [WARN] No text blocks in response: {btypes}")
-            if has_thinking_only:
-                print("    [WARN] Got thinking blocks but no text — model may have output reasoning only")
             return "(AI 摘要失败)"
         summary = "".join(text_parts).strip()
         # Soft truncation — only if wildly over target
@@ -621,6 +743,7 @@ def synthesize_daily_report(videos_by_channel: dict[str, list[dict]],
                     desc_is_rich=v.get("desc_is_rich", False),
                     info_density=v.get("info_density", 0),
                     effective_desc_len=v.get("effective_desc_len", 0),
+                    has_transcript=v.get("has_transcript", False),
                 )
                 v["summary_source"] = "ai"
 
@@ -654,17 +777,24 @@ Produce the daily report now."""
             messages=[{"role": "user", "content": prompt}],
         )
         text_parts = []
-        has_thinking_only = False
+        thinking_parts = []
         for block in response.content:
             if hasattr(block, 'text') and block.text:
                 text_parts.append(block.text)
             elif hasattr(block, 'thinking') and block.thinking:
-                has_thinking_only = True
+                thinking_parts.append(block.thinking)
+        if not text_parts:
+            if thinking_parts:
+                # DeepSeek reasoning models sometimes return ONLY thinking blocks.
+                print("[WARN] No text blocks in daily report — using thinking block content as fallback")
+                report = "\n".join(thinking_parts)
+                if len(report) > 3000:
+                    report = "…(reasoning truncated)…\n\n" + report[-3000:]
+                # Fall through to token stats append below
+                text_parts = [report]  # Route into normal flow
         if not text_parts:
             btypes = [getattr(b, 'type', type(b).__name__) for b in response.content]
             print(f"    [WARN] No text blocks in daily report response: {btypes}")
-            if has_thinking_only:
-                print("    [WARN] Got thinking blocks but no text — model may have output reasoning only")
             return format_lightweight_report(videos_by_channel)
         report = "\n".join(text_parts)
 
@@ -784,14 +914,18 @@ def main():
         return
 
     # ── Step 2: Multi-tier content extraction (token-free) ──
-    print("\n── Step 2: Extracting content (Tier 0–1, adaptive) ──")
+    print("\n── Step 2: Extracting content (Tier 0–1 + transcript) ──")
     ai_needed = 0
+    transcript_count = 0
     extracted = {"title": 0, "description": 0, "description_rich": 0}
     for channel, videos in videos_by_channel.items():
         for i, v in enumerate(videos):
             enriched = extract_content(v)
             videos[i] = enriched
             src = enriched.get("summary_source")
+            has_ts = enriched.get("has_transcript", False)
+            if has_ts:
+                transcript_count += 1
             if src == "title":
                 extracted["title"] += 1
                 print(f"  ✓ [{channel}] title self-summarizing ({len(v['title'])} chars)")
@@ -803,20 +937,25 @@ def main():
                 ai_needed += 1
                 is_rich = enriched.get("desc_is_rich", False)
                 density = enriched.get("info_density", 0)
+                ts_tag = " +transcript" if has_ts else ""
                 if is_rich:
                     extracted["description_rich"] += 1
-                    print(f"  ⟳ [{channel}] RICH desc→AI ({len(enriched.get('cleaned_description', ''))} chars, density={density}): {v['title'][:50]}...")
+                    print(f"  ⟳ [{channel}] RICH desc→AI{ts_tag} ({len(enriched.get('cleaned_description', ''))} chars, density={density}): {v['title'][:50]}...")
                 else:
-                    print(f"  ⟳ [{channel}] needs AI (density={density}): {v['title'][:50]}...")
+                    print(f"  ⟳ [{channel}] needs AI{ts_tag} (density={density}): {v['title'][:50]}...")
 
     print(f"  Tier 0 (title): {extracted['title']} | "
           f"Tier 1 (desc-direct): {extracted['description']} | "
           f"Tier 1 (desc-rich→AI): {extracted['description_rich']} | "
-          f"Tier 2 (AI-thin): {ai_needed - extracted['description_rich']}")
+          f"Tier 2 (AI-thin): {ai_needed - extracted['description_rich']} | "
+          f"Transcripts: {transcript_count}")
 
     # ── Step 3: Synthesize ──
     anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
     anthropic_base_url = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
+    # NOTE: For DeepSeek, use "deepseek-v4-flash" (non-reasoning mode).
+    # The old "deepseek-chat" alias was deprecated 2026-07-24.
+    # Reasoning models return thinking blocks that may lack text blocks entirely.
     anthropic_model = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6")
     use_ai = bool(anthropic_key)
 
@@ -851,12 +990,14 @@ def main():
     rich = extracted.get("description_rich", 0)
     thin_ai = ai_needed - rich
     print(f"  Summary sources: title={extracted['title']} desc-direct={extracted['description']} desc-rich→AI={rich} thin→AI={thin_ai}")
+    print(f"  Transcripts fetched: {transcript_count}/{total}")
     if total > 0:
         pct_free = (extracted['title'] + extracted['description']) / total * 100
         print(f"  Token-free coverage: {pct_free:.0f}% ({extracted['title'] + extracted['description']}/{total})")
         if ai_needed > 0:
             rich_pct = rich / ai_needed * 100 if ai_needed > 0 else 0
-            print(f"  AI-assisted videos: {ai_needed} ({rich} rich/structured, {thin_ai} thin/simple)")
+            ts_ai = sum(1 for vv in videos_by_channel.values() for v in vv if v.get("has_transcript") and v.get("needs_ai"))
+            print(f"  AI-assisted videos: {ai_needed} ({rich} rich/structured, {thin_ai} thin/simple, {ts_ai} with transcript)")
     print(f"  Report: {report_path}")
     print("=" * 60)
 
